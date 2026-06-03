@@ -2,6 +2,7 @@
 
 基于 OpenAI 兼容 LLM 构建的智能旅行规划助手，集成高德地图开放平台 API，提供个性化的旅行计划生成、行程伴游和历史记录管理。
 
+演示视频地址：【智能旅行规划助手 — 基于 LLM 的多智能体行程生成与高德地图集成】 https://www.bilibili.com/video/BV1mgV16gEw7/?share_source=copy_web&vd_source=f486789e701626cf145934c007761661
 ## ✨ 功能特点
 
 - 🤖 **AI驱动的旅行规划**: 支持 OpenAI、DeepSeek 等 LLM 提供商，智能生成详细的多日旅程
