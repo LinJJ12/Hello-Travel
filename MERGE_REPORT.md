@@ -332,6 +332,28 @@ WebSocket 请求：`backend/scripts/e2e_check.py` → **47 项检查全部通过
 
 全程 **零控制台错误 / 零未捕获异常 / 零失败请求**。
 
+实拍截图（已归档至 `docs/images/`，均为等比压缩至 1400px 宽的版本）：
+
+**首页 · 行程定制**
+
+![首页](docs/images/home.jpg)
+
+**行程概览（coverflow 卡片）· 每日行程（分日卡片）**
+
+| 行程概览 | 每日行程 |
+| --- | --- |
+| ![行程概览](docs/images/result-overview.png) | ![每日行程](docs/images/daily-itinerary.png) |
+
+**知识图谱可视化**（canvas 1340×600，力导向图，8 类实体分色）
+
+![知识图谱](docs/images/knowledge-graph.png)
+
+**预算明细 · 天气信息 · 景点地图**
+
+| 预算明细 | 天气信息 | 景点地图 |
+| --- | --- | --- |
+| ![预算明细](docs/images/budget.png) | ![天气信息](docs/images/weather.png) | ![景点地图](docs/images/attraction-map.png) |
+
 该验证同时确认了两件事：antd 按需引入生效（`ant-picker` / `ant-select` / `ant-btn` 等
 均正常渲染，CSS-in-JS 样式注入正常）；多城市知识图谱分支工作正常（根节点存在，
 印证 9.2 中「`root_id` 未定义」的怀疑并不成立）。

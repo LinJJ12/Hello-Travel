@@ -7,3 +7,6 @@ anyio>=4.0.0
 
 # 代码风格与静态检查
 ruff>=0.7.0
+
+# 文档配图归档（scripts/build_doc_images.py 压缩验证截图用，仅此用途）
+pillow>=10.0.0

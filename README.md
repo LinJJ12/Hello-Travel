@@ -46,6 +46,35 @@
 * **用户偏好记忆模块**: 内置分权重的用户专属旅行偏好记忆库，支持遗忘机制与 TOP-K 召回。开启后会在行程生成成功后自动提取稳定偏好并打分入库，下次规划时将高权重偏好注入 Agent Prompt，让推荐持续贴合用户习惯。
 * **奢华暗黑玻璃拟物风**: 全新设计的暗黑系玻璃拟物化 (Dark Luxury Glassmorphism) 界面，提供极具沉浸感的高级视觉体验。
 
+## 界面预览
+
+> 以下截图均取自**真实运行实例**（`npm run build` 产物由后端同源托管，非设计稿）。
+> 数据由 [`backend/scripts/seed_demo_task.py`](backend/scripts/seed_demo_task.py) 生成的多城市示例行程
+> （北京 → 西安，3 天）驱动，**无需配置任何 API Key 即可完整复现**，复现步骤见
+> [开发与验证](#开发与验证)。
+
+### 首页 · 行程定制
+
+![首页](docs/images/home.jpg)
+
+### 行程概览 · 每日行程
+
+| 行程概览（coverflow 卡片） | 每日行程（分日卡片） |
+| --- | --- |
+| ![行程概览](docs/images/result-overview.png) | ![每日行程](docs/images/daily-itinerary.png) |
+
+### 知识图谱可视化
+
+将行程数据实时转换为「城市 → 日期 → 景点 / 酒店 / 餐饮 / 预算」的节点关系图，8 类实体分色呈现：
+
+![知识图谱](docs/images/knowledge-graph.png)
+
+### 预算明细 · 天气信息 · 景点地图
+
+| 预算明细 | 天气信息 | 景点地图 |
+| --- | --- | --- |
+| ![预算明细](docs/images/budget.png) | ![天气信息](docs/images/weather.png) | ![景点地图](docs/images/attraction-map.png) |
+
 ## 工程化增强（v2.2.0 合并优化）
 
 本版本以 TripStar 为主干，合并了同框架项目 [LinJJ12/Hello-Travel](https://github.com/LinJJ12/Hello-Travel) 的工程化改进，并修复了主干中若干「必然报错」的实现缺陷。详见 [`MERGE_REPORT.md`](MERGE_REPORT.md)。
@@ -352,6 +381,10 @@ node scripts/browser_check.mjs "http://127.0.0.1:18080/result?plan_id=e2e00001" 
 HTTP/WebSocket 端到端冒烟 **47/47 通过** ·
 浏览器渲染验证（首页 + 结果页 6 个分区）**零控制台错误 / 零未捕获异常 / 零失败请求**。
 详见 [MERGE_REPORT.md](MERGE_REPORT.md) 第九节。
+
+上述渲染验证的实拍截图已归档至 [`docs/images/`](docs/images/) 并展示在
+[界面预览](#界面预览)一节；其中「行程概览」的布局缺陷（卡片溢出遮挡底部信息行）
+及其定位与修复过程记录在 [MERGE_REPORT.md](MERGE_REPORT.md) 第 9.5 节。
 
 ---
 
