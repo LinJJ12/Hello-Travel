@@ -241,3 +241,44 @@ def test_knowledge_graph_supports_english_labels():
     names = {node["name"] for node in graph["nodes"]}
     assert "Day 1" in names
     assert "杭州" in names  # 城市名保持原文
+
+
+def test_knowledge_graph_multi_city_uses_root_node():
+    """多城市行程应生成「A → B」根节点，并把预算/建议挂到根节点上。
+
+    该分支曾疑似存在 ``root_id`` 未定义的 NameError（仅在多城市 + 有预算时触发），
+    核实后确认已正确赋值，这里用测试锁住行为，防止后续回归。
+    """
+    from app.models.schemas import TripPlan
+
+    plan_dict = _plan_dict()
+    plan_dict["cities"] = ["杭州", "苏州"]
+    plan_dict["days"][0]["city"] = "杭州"
+    plan_dict["days"].append(
+        {**plan_dict["days"][0], "date": "2026-10-02", "day_index": 1, "city": "苏州"}
+    )
+
+    graph = build_knowledge_graph(TripPlan(**plan_dict), language="zh")
+
+    ids = {node["id"] for node in graph["nodes"]}
+    names = {node["name"] for node in graph["nodes"]}
+    edges = {(e["source"], e["target"]) for e in graph["edges"]}
+
+    assert "杭州 → 苏州" in names, "多城市应生成合并根节点"
+    assert "trip_root" in ids
+    assert "city_杭州" in ids
+    assert "city_苏州" in ids
+    assert ("trip_root", "city_杭州") in edges
+    assert ("trip_root", "city_苏州") in edges
+    # 有预算时预算节点挂到根节点——这正是原 NameError 的触发路径
+    assert ("trip_root", "budget_total") in edges
+
+
+def test_knowledge_graph_single_city_has_no_root_node():
+    """单城市不应生成 trip_root，城市自身即根节点。"""
+    from app.models.schemas import TripPlan
+
+    graph = build_knowledge_graph(TripPlan(**_plan_dict()), language="zh")
+    ids = {node["id"] for node in graph["nodes"]}
+    assert "trip_root" not in ids
+    assert "city_杭州" in ids

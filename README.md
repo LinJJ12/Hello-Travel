@@ -334,9 +334,24 @@ python -m uvicorn app.api.main:app --port 18080
 python scripts/e2e_check.py
 ```
 
-**当前验证状态**：`ruff check .` 全通过 · `pytest -q` **71 passed** ·
+浏览器端渲染验证（`vue-tsc` / `vite build` 通过 ≠ 页面能渲染，这一步补上真实渲染与运行时错误检查）：
+
+```bash
+cd backend
+# 用应用自身的模型生成一份「已完成」的多城市行程，无需 LLM 与任何密钥
+python scripts/seed_demo_task.py          # 输出 task_id，例如 e2e00001
+
+cd ..
+# 通过 Chrome DevTools Protocol 打开页面、截图，并汇总控制台错误 / 未捕获异常 / 失败请求
+node scripts/browser_check.mjs "http://127.0.0.1:18080/" .verify/landing.png
+node scripts/browser_check.mjs "http://127.0.0.1:18080/result?plan_id=e2e00001" .verify/graph.png 知识图谱
+```
+
+**当前验证状态**：`ruff check .` 全通过 · `pytest -q` **73 passed** ·
 `vue-tsc --noEmit` 无错误 · `npm run build` 成功且 **0 告警** ·
-端到端冒烟 **47/47 通过**。详见 [MERGE_REPORT.md](MERGE_REPORT.md) 第九节。
+HTTP/WebSocket 端到端冒烟 **47/47 通过** ·
+浏览器渲染验证（首页 + 结果页 6 个分区）**零控制台错误 / 零未捕获异常 / 零失败请求**。
+详见 [MERGE_REPORT.md](MERGE_REPORT.md) 第九节。
 
 ---
 

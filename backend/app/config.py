@@ -107,7 +107,13 @@ class Settings(BaseSettings):
 
 # 创建全局配置实例
 settings = Settings()
-_RUNTIME_SETTINGS_FILE = Path(__file__).resolve().parent.parent / "runtime_settings.json"
+# 运行时配置的持久化位置。允许用环境变量覆盖：
+# - 测试时指向临时目录，避免读取开发者本地配置导致用例结果不确定；
+# - 多实例部署时可指向共享/独立卷。
+_RUNTIME_SETTINGS_FILE = Path(
+    os.getenv("RUNTIME_SETTINGS_FILE")
+    or Path(__file__).resolve().parent.parent / "runtime_settings.json"
+)
 _RUNTIME_SETTING_KEYS = {
     "vite_amap_web_key",
     "vite_amap_web_js_key",

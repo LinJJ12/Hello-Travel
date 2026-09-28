@@ -3,14 +3,16 @@
 在导入应用之前注入测试用环境变量，避免 ``validate_config`` 因缺少密钥而告警，
 并确保测试不读取真实 ``.env``。
 
-同时把任务持久化目录重定向到临时目录，避免测试在仓库里留下
-``backend/data/trip_tasks`` 垃圾文件。
+同时把任务持久化目录与**运行时配置文件**都重定向到临时目录：
+后者若不隔离，开发者本地 ``backend/runtime_settings.json``（例如在前端设置页
+保存过配置）会覆盖 ``settings``，导致用例结果依赖本机状态、时好时坏。
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,43 @@ os.environ.setdefault("LOG_LEVEL", "WARNING")
 os.environ.setdefault("ENVIRONMENT", "local")
 # 记忆模块默认关闭，保证 /api/memory/* 走「未开启」分支
 os.environ.setdefault("ENABLE_USER_MEMORY", "false")
+# 运行时配置隔离：指向一次性临时目录，避免读到开发者本地配置
+os.environ.setdefault(
+    "RUNTIME_SETTINGS_FILE",
+    str(Path(tempfile.mkdtemp(prefix="tripstar-test-")) / "runtime_settings.json"),
+)
+
+from app import config as app_config  # noqa: E402
+
+# 记录导入期的干净状态，供每个用例前恢复（防止某个用例改了配置后污染后续用例）
+_CLEAN_RUNTIME_KEYS = {
+    key: getattr(app_config.settings, key) for key in app_config._RUNTIME_SETTING_KEYS
+}
+# _sync_env_from_settings 会回写这些环境变量，同样需要还原
+_SYNCED_ENV_KEYS = (
+    "OPENAI_API_KEY",
+    "LLM_API_KEY",
+    "OPENAI_BASE_URL",
+    "LLM_BASE_URL",
+    "OPENAI_MODEL",
+    "LLM_MODEL_ID",
+)
+_CLEAN_ENV = {key: os.environ.get(key) for key in _SYNCED_ENV_KEYS}
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_state(tmp_path, monkeypatch):
+    """每个用例前把运行时配置恢复为导入期状态，并重定向持久化文件。"""
+    monkeypatch.setattr(app_config, "_RUNTIME_SETTINGS_FILE", tmp_path / "runtime_settings.json")
+    monkeypatch.setattr(app_config, "_runtime_overrides", {})
+    for key, value in _CLEAN_RUNTIME_KEYS.items():
+        setattr(app_config.settings, key, value)
+    for key, value in _CLEAN_ENV.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    yield
 
 
 @pytest.fixture(autouse=True)

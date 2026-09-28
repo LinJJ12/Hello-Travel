@@ -277,12 +277,18 @@ Hello-Travel 原本在缺少密钥时**直接抛错**，这在「密钥只能来
 
 | 项目 | 结果 |
 | --- | --- |
-| 后端 `pytest -q` | **71 passed**（原 56 → 新增 15 条回归用例） |
+| 后端 `pytest -q` | **73 passed**（原 56 → 新增 17 条回归用例） |
 
-新增回归用例集中在 `tests/test_memory.py`（存储层读写 + 惰性遗忘写回）与
-`tests/test_json_utils.py`（重复逗号容错）。
+新增回归用例集中在 `tests/test_memory.py`（存储层读写 + 惰性遗忘写回）、
+`tests/test_json_utils.py`（重复逗号容错）与 `tests/test_trip_planner.py`
+（多城市知识图谱根节点）。
 
-### 9.3 端到端真实测试
+顺带修掉一个**测试隔离缺陷**：`tests/conftest.py` 原先只隔离了任务落盘目录，没有隔离
+运行时配置文件，导致开发者本地若在前端设置页保存过配置（`backend/runtime_settings.json`），
+`settings` 会被本地值覆盖，用例结果随本机状态变化。现已把运行时配置也重定向到临时目录，
+并在每个用例前恢复导入期状态。
+
+### 9.3 HTTP / WebSocket 端到端真实测试
 
 启动真实 `uvicorn` 实例（`127.0.0.1:18080`），对运行中的服务发起真实 HTTP /
 WebSocket 请求：`backend/scripts/e2e_check.py` → **47 项检查全部通过**。
@@ -302,6 +308,33 @@ WebSocket 请求：`backend/scripts/e2e_check.py` → **47 项检查全部通过
 未配置密钥时的行为符合设计：高德相关接口返回 `success=false` 且 `data` 为空（不报 500）；
 行程任务以可读的配置错误信息结束（`【认证失败】小红书 Cookie 未配置…`）并回传
 `request_payload` 供前端重试，服务进程本身无异常退出。
+
+### 9.4 浏览器端渲染验证
+
+`vue-tsc` 通过、`vite build` 成功，都**不等于**页面能渲染。这一步补上真实浏览器渲染。
+
+做法（无需 LLM 与任何密钥）：
+
+1. `backend/scripts/seed_demo_task.py` 用应用自身的 pydantic 模型构造一份**多城市**
+   已完成行程，调用真实的 `build_knowledge_graph`，按 `trip.py` 的持久化格式写入
+   `backend/data/trip_tasks/<task_id>.json`（示例：3 天、北京→西安、27 节点 / 27 边 / 8 分类）；
+2. `scripts/browser_check.mjs` 通过 Chrome DevTools Protocol 打开页面、按文本点击分区、
+   截图，并汇总控制台错误 / 未捕获异常 / 失败请求。
+
+| 页面 / 分区 | 结果 |
+| --- | --- |
+| 首页 `/` | 完整渲染（品牌、表单、偏好、历史计划显示「北京 → 西安」） |
+| 结果页 `/result` 行程概览 | 景点卡片、日期区间、Plan ID、总体建议 |
+| 预算明细 | 预算与景点信息 |
+| 每日行程 | 逐日卡片：行程描述 / 交通 / 住宿 / 景点（含「需提前预约」提示）/ 酒店 / 餐饮，多城市移动日标注 |
+| 知识图谱 | **canvas 1340×600**，力导向图含「北京 → 西安」根节点，8 个图例分类齐全 |
+| 天气信息 | 逐日天气、降水概率、湿度、风力 |
+
+全程 **零控制台错误 / 零未捕获异常 / 零失败请求**。
+
+该验证同时确认了两件事：antd 按需引入生效（`ant-picker` / `ant-select` / `ant-btn` 等
+均正常渲染，CSS-in-JS 样式注入正常）；多城市知识图谱分支工作正常（根节点存在，
+印证 9.2 中「`root_id` 未定义」的怀疑并不成立）。
 
 ---
 
