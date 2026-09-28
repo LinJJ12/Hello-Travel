@@ -1,6 +1,5 @@
 import { createApp } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
-import Antd from 'ant-design-vue'
 import 'ant-design-vue/dist/reset.css'
 import App from './App.vue'
 
@@ -32,8 +31,9 @@ const router = createRouter({
 
 const app = createApp(App)
 
+// 说明：不再全量 `app.use(Antd)`。
+// ant-design-vue 组件由 unplugin-vue-components 按需自动注册（见 vite.config.ts），
+// 命令式 API（message 等）在各视图内按需 import，因此这里无需注册全局插件。
 app.use(router)
-app.use(Antd)
 
 app.mount('#app')
-

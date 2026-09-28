@@ -504,7 +504,6 @@ import {
   ShareAltOutlined,
   StarOutlined
 } from '@ant-design/icons-vue'
-import AMapLoader from '@amap/amap-jsapi-loader'
 import type { Attraction, TripPlan, WeatherInfo } from '@/types'
 import {
   getActiveHistoryId,
@@ -513,6 +512,11 @@ import {
   setActiveHistoryId,
   updateTripHistory
 } from '@/services/history'
+import { extractErrorMessage, fetchAttractionPhoto } from '@/services/api'
+import { useAMap } from '@/composables/useAMap'
+import { buildFallbackImage, handleImageError as applyImageFallback } from '@/utils/image'
+import { downloadTextFile, exportElementAsImage, exportElementAsPdf, exportFilename } from '@/utils/export'
+import logger from '@/utils/logger'
 
 const router = useRouter()
 const route = useRoute()
@@ -525,9 +529,14 @@ const activeDays = ref<number[]>([0])
 const activeHistoryId = ref<string | null>(null)
 const draggedAttraction = ref<{ dayIndex: number; attrIndex: number } | null>(null)
 
-let map: any = null
-let mapApi: any = null
-let mapMarkers: Record<string, any> = {}
+// 地图实例 / 标记 / 折线由 composable 统一管理，组件卸载时自动销毁
+const { map, mapApi, init: initAMap, clearMarkers, renderMarkers, openInfoWindow, destroy: destroyMap } = useAMap(
+  'amap-container',
+  { zoom: 12, plugins: ['AMap.Marker', 'AMap.Polyline', 'AMap.InfoWindow'] }
+)
+
+/** 折线对象（多日路线），切换/刷新地图时需要一并清理 */
+let routePolylines: any[] = []
 
 const totalAttractions = computed(() => {
   return tripPlan.value?.days.reduce((sum, day) => sum + day.attractions.length, 0) || 0
@@ -647,14 +656,20 @@ onMounted(async () => {
   if (!tripPlan.value) {
     const data = sessionStorage.getItem('tripPlan')
     if (data) {
-      tripPlan.value = JSON.parse(data)
+      try {
+        tripPlan.value = JSON.parse(data)
+      } catch (error) {
+        // 缓存损坏时清掉，避免页面一直白屏
+        logger.error('解析本地行程缓存失败，已清除:', error)
+        sessionStorage.removeItem('tripPlan')
+      }
     }
   }
 
   if (tripPlan.value) {
     await loadAttractionPhotos()
     await nextTick()
-    initMap()
+    await initAMap()
   }
 })
 
@@ -670,8 +685,8 @@ const goExplore = () => {
   router.push({ path: '/explore', query: { city: tripPlan.value?.city || '', theme: 'none' } })
 }
 
-const handleTabChange = async (key: string) => {
-  activeTab.value = key
+const handleTabChange = async (key: string | number) => {
+  activeTab.value = String(key)
   if (key === 'map') {
     await nextTick()
     refreshMap()
@@ -689,6 +704,14 @@ const focusDay = async (dayIndex: number) => {
   window.scrollTo({ top: Math.max(top, 0), behavior: 'auto' })
 }
 
+const buildAttractionInfoHtml = (attraction: Attraction, dayIndex: number, attrIndex: number): string => `
+  <div style="padding: 12px; max-width: 260px;">
+    <h4 style="margin: 0 0 8px 0;">${attraction.name}</h4>
+    <p style="margin: 4px 0;">${attraction.address || ''}</p>
+    <p style="margin: 4px 0; color: #0f766e;">第${dayIndex + 1}天 · 第${attrIndex + 1}站</p>
+  </div>
+`
+
 const focusAttraction = async (dayIndex: number, attrIndex: number, switchTab = true) => {
   const attraction = tripPlan.value?.days[dayIndex]?.attractions[attrIndex]
   if (!attraction?.location) return
@@ -696,30 +719,15 @@ const focusAttraction = async (dayIndex: number, attrIndex: number, switchTab = 
   if (switchTab) {
     activeTab.value = 'map'
     await nextTick()
-    if (!map) initMap()
+    if (!map.value) await initAMap()
   }
 
-  if (!map) return
-  const position = [attraction.location.longitude, attraction.location.latitude]
-  map.setZoomAndCenter(15, position)
-  const marker = mapMarkers[`${dayIndex}-${attrIndex}`]
-  if (marker && mapApi) {
-    const infoWindow = new mapApi.InfoWindow({
-      content: `
-        <div style="padding: 12px; max-width: 260px;">
-          <h4 style="margin: 0 0 8px 0;">${attraction.name}</h4>
-          <p style="margin: 4px 0;">${attraction.address || ''}</p>
-          <p style="margin: 4px 0; color: #0f766e;">第${dayIndex + 1}天 · 第${attrIndex + 1}站</p>
-        </div>
-      `,
-      offset: new mapApi.Pixel(0, -30),
-      autoMove: false
-    })
-    infoWindow.open(map, marker.getPosition())
-    window.setTimeout(() => {
-      map?.setCenter(position)
-    }, 80)
-  }
+  if (!map.value) return
+  openInfoWindow(
+    attraction.location.longitude,
+    attraction.location.latitude,
+    buildAttractionInfoHtml(attraction, dayIndex, attrIndex)
+  )
 }
 
 const toggleEditMode = () => {
@@ -832,111 +840,49 @@ const getWeatherAdvice = (item: WeatherInfo) => {
 
 const loadAttractionPhotos = async () => {
   if (!tripPlan.value) return
-  const promises: Promise<void>[] = []
+  const tasks: Promise<void>[] = []
   tripPlan.value.days.forEach(day => {
     day.attractions.forEach(attraction => {
       if (attraction.image_url) {
         attractionPhotos.value[attraction.name] = attraction.image_url
         return
       }
-      const promise = fetch(`http://localhost:8000/api/poi/photo?name=${encodeURIComponent(attraction.name)}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data.success && data.data.photo_url) {
-            attractionPhotos.value[attraction.name] = data.data.photo_url
-          }
+      if (attractionPhotos.value[attraction.name]) return
+      tasks.push(
+        fetchAttractionPhoto(attraction.name).then(url => {
+          if (url) attractionPhotos.value[attraction.name] = url
         })
-        .catch(() => undefined)
-      promises.push(promise)
+      )
     })
   })
-  await Promise.all(promises)
+  await Promise.allSettled(tasks)
 }
 
-const getFallbackImage = (name: string, index: number): string => {
-  const colors = [
-    { start: '#0f766e', end: '#2563eb' },
-    { start: '#f97316', end: '#0f766e' },
-    { start: '#1d4ed8', end: '#7c3aed' },
-    { start: '#334155', end: '#0f766e' }
-  ]
-  const { start, end } = colors[index % colors.length]
-  const safeName = name.replace(/[<>&"']/g, '')
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="520">
-    <defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="${start}"/><stop offset="100%" stop-color="${end}"/>
-    </linearGradient></defs>
-    <rect width="800" height="520" fill="url(#g)"/>
-    <circle cx="650" cy="120" r="110" fill="rgba(255,255,255,0.16)"/>
-    <text x="56" y="270" font-family="Arial, sans-serif" font-size="48" font-weight="700" fill="white">${safeName}</text>
-  </svg>`
-  return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`
-}
+const getFallbackImage = (name: string, index: number): string => buildFallbackImage(name, index)
 
 const getAttractionImage = (name: string, index: number): string => {
-  return attractionPhotos.value[name] || getFallbackImage(name, index)
+  return attractionPhotos.value[name] || buildFallbackImage(name, index)
 }
 
-const handleImageError = (event: Event) => {
-  const img = event.target as HTMLImageElement
-  img.src = getFallbackImage(img.alt || '旅行计划', 0)
-}
+const handleImageError = applyImageFallback
 
 const exportAsImage = async () => {
   try {
     message.loading({ content: '正在生成图片...', key: 'export', duration: 0 })
-    const { default: html2canvas } = await import('html2canvas')
-    const element = document.querySelector('#trip-export-area') as HTMLElement
-    if (!element) throw new Error('未找到内容元素')
-    const canvas = await html2canvas(element, {
-      backgroundColor: '#f6f8fb',
-      scale: 2,
-      useCORS: true,
-      allowTaint: true
-    })
-    const link = document.createElement('a')
-    link.download = `旅行计划_${tripPlan.value?.city}_${Date.now()}.png`
-    link.href = canvas.toDataURL('image/png')
-    link.click()
+    await exportElementAsImage('#trip-export-area', exportFilename('旅行计划', 'png', tripPlan.value?.city))
     message.success({ content: '图片导出成功', key: 'export' })
-  } catch (error: any) {
-    message.error({ content: `导出图片失败: ${error.message}`, key: 'export' })
+  } catch (error: unknown) {
+    message.error({ content: `导出图片失败: ${extractErrorMessage(error, '未知错误')}`, key: 'export' })
   }
 }
 
 const exportAsPDF = async () => {
   try {
     message.loading({ content: '正在生成 PDF...', key: 'export', duration: 0 })
-    const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
-      import('html2canvas'),
-      import('jspdf')
-    ])
-    const element = document.querySelector('#trip-export-area') as HTMLElement
-    if (!element) throw new Error('未找到内容元素')
-    const canvas = await html2canvas(element, {
-      backgroundColor: '#f6f8fb',
-      scale: 2,
-      useCORS: true,
-      allowTaint: true
-    })
-    const imgData = canvas.toDataURL('image/png')
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-    const imgWidth = 210
-    const imgHeight = (canvas.height * imgWidth) / canvas.width
-    let heightLeft = imgHeight
-    let position = 0
-    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
-    heightLeft -= 297
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight
-      pdf.addPage()
-      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
-      heightLeft -= 297
-    }
-    pdf.save(`旅行计划_${tripPlan.value?.city}_${Date.now()}.pdf`)
+    await exportElementAsPdf('#trip-export-area', exportFilename('旅行计划', 'pdf', tripPlan.value?.city))
     message.success({ content: 'PDF 导出成功', key: 'export' })
-  } catch (error: any) {
-    message.error({ content: `导出 PDF 失败: ${error.message}`, key: 'export' })
+  } catch (error: unknown) {
+    message.error({ content: `导出 PDF 失败: ${extractErrorMessage(error, '未知错误')}`, key: 'export' })
   }
 }
 
@@ -980,19 +926,9 @@ const buildMarkdown = (): string => {
   return lines.join('\n')
 }
 
-const downloadTextFile = (content: string, filename: string, type = 'text/markdown;charset=utf-8') => {
-  const blob = new Blob([content], { type })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  link.click()
-  URL.revokeObjectURL(url)
-}
-
 const exportAsMarkdown = () => {
   if (!tripPlan.value) return
-  downloadTextFile(buildMarkdown(), `旅行计划_${tripPlan.value.city}_${Date.now()}.md`)
+  downloadTextFile(buildMarkdown(), exportFilename('旅行计划', 'md', tripPlan.value.city))
   message.success('Markdown 导出成功')
 }
 
@@ -1010,95 +946,70 @@ const copyShareLink = async () => {
     await navigator.clipboard.writeText(url)
     message.success('分享链接已复制')
   } catch {
-    downloadTextFile(url, `旅行计划_${tripPlan.value.city}_分享链接.txt`, 'text/plain;charset=utf-8')
+    downloadTextFile(
+      url,
+      exportFilename('旅行计划分享链接', 'txt', tripPlan.value.city),
+      'text/plain;charset=utf-8'
+    )
     message.warning('无法访问剪贴板，已导出分享链接文本')
   }
 }
 
-const refreshMap = () => {
-  if (map) {
-    map.destroy()
-    map = null
-    mapMarkers = {}
-  }
-  nextTick(() => initMap())
+const refreshMap = async () => {
+  clearMarkers()
+  clearRoutes()
+  destroyMap()
+  await nextTick()
+  await initMap()
 }
 
 const initMap = async () => {
-  const container = document.getElementById('amap-container')
-  if (!container || !tripPlan.value) return
-  try {
-    const AMap = await AMapLoader.load({
-      key: import.meta.env.VITE_AMAP_WEB_JS_KEY,
-      version: '2.0',
-      plugins: ['AMap.Marker', 'AMap.Polyline', 'AMap.InfoWindow']
-    })
-    mapApi = AMap
-
-    const located = routeStops.value.filter((item: Attraction) => {
-      return item.location?.longitude && item.location?.latitude
-    })
-    const center = located.length
-      ? [
-          located.reduce((sum, item: any) => sum + item.location.longitude, 0) / located.length,
-          located.reduce((sum, item: any) => sum + item.location.latitude, 0) / located.length
-        ]
-      : [116.397128, 39.916527]
-
-    map = new AMap.Map('amap-container', {
-      zoom: 12,
-      center,
-      viewMode: '3D',
-      mapStyle: 'amap://styles/normal'
-    })
-    addAttractionMarkers(AMap)
-  } catch (error) {
-    console.error('地图加载失败:', error)
+  if (!tripPlan.value) return
+  const ok = await initAMap()
+  if (!ok) {
     message.error('地图加载失败')
+    return
   }
+  renderAttractionMarkers()
+  drawRoutes()
 }
 
-const addAttractionMarkers = (AMap: any) => {
-  if (!tripPlan.value || !map) return
-  const markers: any[] = []
-  mapMarkers = {}
+const buildStopInfoHtml = (stop: Attraction & { dayIndex: number; attrIndex: number }): string => `
+  <div style="padding:12px;max-width:280px;">
+    <h4 style="margin:0 0 8px 0;">${stop.name}</h4>
+    <p style="margin:4px 0;"><strong>地址:</strong> ${stop.address || ''}</p>
+    <p style="margin:4px 0;"><strong>游览:</strong> ${stop.visit_duration || 0}分钟</p>
+    <p style="margin:4px 0;color:#0f766e;"><strong>第${stop.dayIndex + 1}天 · 第${stop.attrIndex + 1}站</strong></p>
+  </div>
+`
 
-  routeStops.value.forEach((attraction: any, index: number) => {
-    if (!attraction.location?.longitude || !attraction.location?.latitude) return
-    const marker = new AMap.Marker({
-      position: [attraction.location.longitude, attraction.location.latitude],
-      title: attraction.name,
-      label: {
-        content: `<div style="background:#0f766e;color:white;padding:5px 9px;border-radius:8px;font-size:12px;font-weight:700;">${index + 1}</div>`,
-        offset: new AMap.Pixel(0, -30)
-      }
-    })
-    const infoWindow = new AMap.InfoWindow({
-      content: `
-        <div style="padding:12px;max-width:280px;">
-          <h4 style="margin:0 0 8px 0;">${attraction.name}</h4>
-          <p style="margin:4px 0;"><strong>地址:</strong> ${attraction.address || ''}</p>
-          <p style="margin:4px 0;"><strong>游览:</strong> ${attraction.visit_duration || 0}分钟</p>
-          <p style="margin:4px 0;color:#0f766e;"><strong>第${attraction.dayIndex + 1}天 · 第${attraction.attrIndex + 1}站</strong></p>
-        </div>
-      `,
-      offset: new AMap.Pixel(0, -30),
-      autoMove: false
-    })
-    marker.on('click', () => infoWindow.open(map, marker.getPosition()))
-    mapMarkers[`${attraction.dayIndex}-${attraction.attrIndex}`] = marker
-    markers.push(marker)
-  })
-
-  if (markers.length > 0) {
-    map.add(markers)
-    map.setFitView(markers)
-  }
-  drawRoutes(AMap)
+const renderAttractionMarkers = () => {
+  const stops = routeStops.value.filter(
+    (item): item is Attraction & { dayIndex: number; attrIndex: number } =>
+      Boolean(item.location?.longitude && item.location?.latitude)
+  )
+  renderMarkers(
+    stops.map(stop => ({
+      lng: stop.location.longitude,
+      lat: stop.location.latitude,
+      title: stop.name,
+      onClick: () => openInfoWindow(stop.location.longitude, stop.location.latitude, buildStopInfoHtml(stop))
+    }))
+  )
 }
 
-const drawRoutes = (AMap: any) => {
-  if (!tripPlan.value || !map) return
+const clearRoutes = () => {
+  if (map.value && routePolylines.length > 0) {
+    map.value.remove(routePolylines)
+  }
+  routePolylines = []
+}
+
+const drawRoutes = () => {
+  const AMap = mapApi.value
+  const instance = map.value
+  if (!AMap || !instance || !tripPlan.value) return
+
   tripPlan.value.days.forEach(day => {
     const path = day.attractions
       .filter(item => item.location?.longitude && item.location?.latitude)
@@ -1112,7 +1023,8 @@ const drawRoutes = (AMap: any) => {
       strokeStyle: 'solid',
       showDir: true
     })
-    map.add(polyline)
+    instance.add(polyline)
+    routePolylines.push(polyline)
   })
 }
 

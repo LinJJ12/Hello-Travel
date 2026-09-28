@@ -348,7 +348,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
@@ -361,7 +361,7 @@ import {
   EnvironmentOutlined,
   ThunderboltOutlined
 } from '@ant-design/icons-vue'
-import { generateTripPlan } from '@/services/api'
+import { extractErrorMessage, generateTripPlan } from '@/services/api'
 import { saveTripToHistory } from '@/services/history'
 import type { TripFormData } from '@/types'
 import type { Dayjs } from 'dayjs'
@@ -405,8 +405,9 @@ const preferenceOptions = [
 ]
 
 type TripFormState = Omit<TripFormData, 'start_date' | 'end_date'> & {
-  start_date: Dayjs | null
-  end_date: Dayjs | null
+  // 使用 undefined 而非 null：ant-design-vue 的 DatePicker 类型不接受 null
+  start_date: Dayjs | undefined
+  end_date: Dayjs | undefined
   destinations_text: string
 }
 
@@ -414,8 +415,8 @@ const formData = reactive<TripFormState>({
   city: '',
   destinations: [],
   destinations_text: '',
-  start_date: null,
-  end_date: null,
+  start_date: undefined,
+  end_date: undefined,
   travel_days: 1,
   transportation: '公共交通',
   accommodation: '舒适型酒店',
@@ -480,10 +481,10 @@ watch([() => formData.start_date, () => formData.end_date], ([start, end]) => {
     formData.travel_days = days
   } else if (days > 30) {
     message.warning('旅行天数不能超过 30 天')
-    formData.end_date = null
+    formData.end_date = undefined
   } else {
     message.warning('结束日期不能早于开始日期')
-    formData.end_date = null
+    formData.end_date = undefined
   }
 })
 
@@ -495,20 +496,49 @@ const goHistory = () => {
   router.push('/history')
 }
 
+// 进度模拟与延时跳转使用的定时器，统一管理，组件卸载时清理（修复内存泄漏）
+const PROGRESS_TICK_MS = 500
+const PROGRESS_STEP = 4
+const PROGRESS_CEILING = 88
+const REDIRECT_DELAY_MS = 500
+const RESET_DELAY_MS = 1000
+
+let progressTimer: number | null = null
+let redirectTimer: number | null = null
+let resetTimer: number | null = null
+
+const clearTimers = () => {
+  if (progressTimer !== null) {
+    window.clearInterval(progressTimer)
+    progressTimer = null
+  }
+  if (redirectTimer !== null) {
+    window.clearTimeout(redirectTimer)
+    redirectTimer = null
+  }
+  if (resetTimer !== null) {
+    window.clearTimeout(resetTimer)
+    resetTimer = null
+  }
+}
+
+onUnmounted(clearTimers)
+
 const handleSubmit = async () => {
   if (!formData.start_date || !formData.end_date) {
     message.error('请选择完整日期')
     return
   }
 
+  clearTimers()
   loading.value = true
   loadingProgress.value = 0
   loadingStatus.value = '正在整理旅行需求...'
 
-  const progressInterval = window.setInterval(() => {
-    if (loadingProgress.value >= 88) return
+  progressTimer = window.setInterval(() => {
+    if (loadingProgress.value >= PROGRESS_CEILING) return
 
-    loadingProgress.value += 4
+    loadingProgress.value += PROGRESS_STEP
     if (loadingProgress.value <= 30) {
       loadingStatus.value = '正在搜索城市景点与位置...'
     } else if (loadingProgress.value <= 50) {
@@ -518,7 +548,7 @@ const handleSubmit = async () => {
     } else {
       loadingStatus.value = '正在生成最终行程...'
     }
-  }, 500)
+  }, PROGRESS_TICK_MS)
 
   try {
     const requestData: TripFormData = {
@@ -544,7 +574,10 @@ const handleSubmit = async () => {
       loadingStatus.value = progress.message || progress.stage || loadingStatus.value
     })
 
-    window.clearInterval(progressInterval)
+    if (progressTimer !== null) {
+      window.clearInterval(progressTimer)
+      progressTimer = null
+    }
     loadingProgress.value = 100
     loadingStatus.value = '行程生成完成'
 
@@ -553,21 +586,24 @@ const handleSubmit = async () => {
       saveTripToHistory(response.data, requestData)
       message.success('旅行计划生成成功')
 
-      window.setTimeout(() => {
+      redirectTimer = window.setTimeout(() => {
         router.push('/result')
-      }, 500)
+      }, REDIRECT_DELAY_MS)
     } else {
       message.error(response.message || '生成失败')
     }
-  } catch (error: any) {
-    window.clearInterval(progressInterval)
-    message.error(error.message || '生成旅行计划失败，请稍后重试')
+  } catch (error: unknown) {
+    if (progressTimer !== null) {
+      window.clearInterval(progressTimer)
+      progressTimer = null
+    }
+    message.error(extractErrorMessage(error, '生成旅行计划失败，请稍后重试'))
   } finally {
-    window.setTimeout(() => {
+    resetTimer = window.setTimeout(() => {
       loading.value = false
       loadingProgress.value = 0
       loadingStatus.value = ''
-    }, 1000)
+    }, RESET_DELAY_MS)
   }
 }
 </script>

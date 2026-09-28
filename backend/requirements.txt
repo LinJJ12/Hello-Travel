@@ -1,22 +1,22 @@
-# OpenAI兼容LLM客户端
+# ---- OpenAI 兼容 LLM 客户端 ----
 openai>=1.40.0
 
-# FastAPI和相关依赖
+# ---- Web 框架 ----
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
+
+# ---- 数据校验与配置 ----
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
-# HTTP客户端
+# ---- HTTP 客户端（高德地图 / Unsplash）----
 httpx>=0.27.0
-aiohttp>=3.10.0
 
-# 环境变量管理
+# ---- 环境变量管理 ----
 python-dotenv>=1.0.0
 
-# CORS支持
-python-multipart>=0.0.9
-
-# 其他工具
-python-dateutil>=2.8.2
-huggingface_hub>=0.25.0
+# 说明：
+# - 原 requirements 中的 huggingface_hub / aiohttp / python-multipart /
+#   python-dateutil 在代码中并未实际使用，已移除以精简镜像体积与安装时间。
+# - 原代码 unsplash_service 使用了 requests，但未在此声明（隐性缺失依赖）；
+#   现已改用 httpx 实现，无需再引入 requests。

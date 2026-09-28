@@ -8,8 +8,8 @@ import type {
   TripPlanProgress,
   TripPlanResponse
 } from '@/types'
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+import { API_BASE_URL } from '@/config'
+import logger from '@/utils/logger'
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -22,11 +22,11 @@ const apiClient = axios.create({
 // 请求拦截器
 apiClient.interceptors.request.use(
   (config) => {
-    console.log('发送请求:', config.method?.toUpperCase(), config.url)
+    logger.debug('发送请求:', config.method?.toUpperCase(), config.url)
     return config
   },
   (error) => {
-    console.error('请求错误:', error)
+    logger.error('请求错误:', error)
     return Promise.reject(error)
   }
 )
@@ -34,14 +34,26 @@ apiClient.interceptors.request.use(
 // 响应拦截器
 apiClient.interceptors.response.use(
   (response) => {
-    console.log('收到响应:', response.status, response.config.url)
+    logger.debug('收到响应:', response.status, response.config.url)
     return response
   },
   (error) => {
-    console.error('响应错误:', error.response?.status, error.message)
+    logger.error('响应错误:', error.response?.status, error.message)
     return Promise.reject(error)
   }
 )
+
+/**
+ * 从后端错误对象里提取可读的 message。
+ *
+ * 后端在改造后统一返回 `{ code, message }` 结构，这里做兼容处理。
+ */
+export function extractErrorMessage(error: any, fallback = '请求失败'): string {
+  const detail = error?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (detail?.message) return detail.message
+  return error?.message || fallback
+}
 
 /**
  * 生成旅行计划
@@ -82,8 +94,8 @@ export async function generateTripPlan(
         }
       } catch (pollErr: any) {
         // 如果 404/500 等，可直接抛出
-        console.error('轮询错误:', pollErr)
-        throw new Error(pollErr.response?.data?.detail || pollErr.message || '轮询任务失败')
+        logger.error('轮询错误:', pollErr)
+        throw new Error(extractErrorMessage(pollErr, '轮询任务失败'))
       }
 
       // 等待
@@ -93,8 +105,24 @@ export async function generateTripPlan(
     throw new Error('等待任务超时')
 
   } catch (error: any) {
-    console.error('生成旅行计划失败:', error)
-    throw new Error(error.response?.data?.detail || error.message || '生成旅行计划失败')
+    logger.error('生成旅行计划失败:', error)
+    throw new Error(extractErrorMessage(error, '生成旅行计划失败'))
+  }
+}
+
+/**
+ * 获取景点配图（Unsplash）。
+ *
+ * 原实现直接在 Result.vue 里 `fetch('http://localhost:8000/api/poi/photo')`，
+ * 硬编码了后端地址且绕过了统一的 axios 封装；这里改为走 apiClient。
+ */
+export async function fetchAttractionPhoto(name: string): Promise<string | null> {
+  try {
+    const response = await apiClient.get('/api/poi/photo', { params: { name }, timeout: 15000 })
+    return response.data?.data?.photo_url || null
+  } catch (error) {
+    logger.debug('获取景点配图失败:', name, error)
+    return null
   }
 }
 

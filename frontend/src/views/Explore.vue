@@ -137,9 +137,11 @@ import {
   SearchOutlined,
   ShoppingOutlined
 } from '@ant-design/icons-vue'
-import AMapLoader from '@amap/amap-jsapi-loader'
-import { EXPLORE_THEMES, searchPOI, searchPOIByTheme, type ExploreThemeKey } from '@/services/api'
+import { EXPLORE_THEMES, extractErrorMessage, searchPOI, searchPOIByTheme, type ExploreThemeKey } from '@/services/api'
+import { useAMap } from '@/composables/useAMap'
+import { FOCUS_MAP_ZOOM } from '@/config'
 import type { ExplorePlace } from '@/types'
+import logger from '@/utils/logger'
 
 const route = useRoute()
 const router = useRouter()
@@ -152,9 +154,9 @@ const loading = ref(false)
 const places = ref<ExplorePlace[]>([])
 const selectedPlace = ref<ExplorePlace | null>(null)
 
-let map: any = null
-let mapApi: any = null
-let markers: any[] = []
+// 地图实例 / 标记由 composable 统一管理，组件卸载时自动销毁（修复内存泄漏）
+const { map, init: initMap, clearMarkers, renderMarkers, openInfoWindow } = useAMap('explore-amap')
+
 let searchSubmitting = false
 
 const iconMap: Record<string, any> = {
@@ -165,6 +167,17 @@ const iconMap: Record<string, any> = {
   culture: ReadOutlined,
   leisure: CompassOutlined,
   shopping: ShoppingOutlined
+}
+
+const getThemeDescription = (themeKey: string) => {
+  const descriptions: Record<string, string> = {
+    nature: '景区、公园、山水湖泊',
+    food: '餐厅、小吃、老字号',
+    culture: '博物馆、古迹、寺庙',
+    leisure: '艺术馆、展览、街区',
+    shopping: '商圈、市集、购物中心'
+  }
+  return descriptions[themeKey] || '探索当地地点'
 }
 
 const themeOptions = computed(() => [
@@ -178,17 +191,6 @@ const themeOptions = computed(() => [
   }))
 ])
 
-const getThemeDescription = (themeKey: string) => {
-  const descriptions: Record<string, string> = {
-    nature: '景区、公园、山水湖泊',
-    food: '餐厅、小吃、老字号',
-    culture: '博物馆、古迹、寺庙',
-    leisure: '艺术馆、展览、街区',
-    shopping: '商圈、市集、购物中心'
-  }
-  return descriptions[themeKey] || '探索当地地点'
-}
-
 const activeThemeLabel = computed(() => {
   return themeOptions.value.find(theme => theme.key === activeTheme.value)?.label || '全部主题'
 })
@@ -199,6 +201,18 @@ const resultModeLabel = computed(() => {
   return activeThemeLabel.value
 })
 
+const isExploreThemeKey = (value: string): value is ExploreThemeKey => {
+  return ['none', 'all', ...EXPLORE_THEMES.map(theme => theme.key)].includes(value)
+}
+
+const buildInfoHtml = (place: ExplorePlace): string => `
+  <div style="padding:12px;max-width:280px;">
+    <h4 style="margin:0 0 8px 0;">${place.name}</h4>
+    <p style="margin:4px 0;">${place.address || ''}</p>
+    <p style="margin:4px 0;color:#0f766e;">${place.themeLabel} · ${place.keyword}</p>
+  </div>
+`
+
 onMounted(async () => {
   const queryCity = typeof route.query.city === 'string' ? route.query.city : ''
   const queryTheme = typeof route.query.theme === 'string' ? route.query.theme : ''
@@ -208,36 +222,12 @@ onMounted(async () => {
     activeTheme.value = queryTheme
   }
   await nextTick()
-  await initMap()
+  const ok = await initMap()
+  if (!ok) message.error('互动地图加载失败，请检查高德地图 JS Key')
   if (city.value && activeTheme.value !== 'none') {
     await reloadPlaces()
   }
 })
-
-const isExploreThemeKey = (value: string): value is ExploreThemeKey => {
-  return ['none', 'all', ...EXPLORE_THEMES.map(theme => theme.key)].includes(value)
-}
-
-const initMap = async () => {
-  const container = document.getElementById('explore-amap')
-  if (!container) return
-  try {
-    const AMap = await AMapLoader.load({
-      key: import.meta.env.VITE_AMAP_WEB_JS_KEY,
-      version: '2.0',
-      plugins: ['AMap.Marker', 'AMap.InfoWindow']
-    })
-    mapApi = AMap
-    map = new AMap.Map('explore-amap', {
-      zoom: 4,
-      center: [104.195397, 35.86166],
-      viewMode: '3D'
-    })
-  } catch (error) {
-    console.error('互动地图加载失败:', error)
-    message.error('互动地图加载失败，请检查高德地图 JS Key')
-  }
-}
 
 const handleSearch = async () => {
   if (searchSubmitting) return
@@ -254,7 +244,7 @@ const handleSearch = async () => {
   clearMarkers()
   router.replace({ path: '/explore', query: { city: city.value } })
   try {
-    if (!map) {
+    if (!map.value) {
       await nextTick()
       await initMap()
     }
@@ -317,51 +307,32 @@ const reloadPlaces = async (options: { directSearch?: boolean; keepLoading?: boo
     } else {
       places.value = await searchPOIByTheme(city.value, activeTheme.value)
     }
-    renderMarkers()
+    renderMarkersForPlaces()
     if (places.value[0]) {
       selectPlace(places.value[0], false)
     } else if (shouldDirectSearch) {
       message.info('暂未找到地点结果，请尝试输入更具体的地区或地点名称')
     }
-  } catch (error: any) {
-    console.error('地点检索失败:', error)
+  } catch (error: unknown) {
+    logger.error('地点检索失败:', error)
     places.value = []
     clearMarkers()
-    message.error(error.message || '地点检索失败')
+    message.error(extractErrorMessage(error, '地点检索失败'))
   } finally {
     if (!options.keepLoading) loading.value = false
   }
 }
 
-const clearMarkers = () => {
-  if (map && markers.length > 0) {
-    map.remove(markers)
-  }
-  markers = []
-}
-
-const renderMarkers = () => {
-  if (!map || !mapApi) return
-  clearMarkers()
-  markers = places.value
+const renderMarkersForPlaces = () => {
+  const specs = places.value
     .filter(place => place.location?.longitude && place.location?.latitude)
-    .map((place, index) => {
-      const marker = new mapApi.Marker({
-        position: [place.location.longitude, place.location.latitude],
-        title: place.name,
-        label: {
-          content: `<div style="background:#0f766e;color:white;padding:5px 8px;border-radius:8px;font-size:12px;font-weight:700;">${index + 1}</div>`,
-          offset: new mapApi.Pixel(0, -28)
-        }
-      })
-      marker.on('click', () => selectPlace(place))
-      return marker
-    })
-
-  if (markers.length > 0) {
-    map.add(markers)
-    map.setFitView(markers)
-  }
+    .map(place => ({
+      lng: place.location.longitude,
+      lat: place.location.latitude,
+      title: place.name,
+      onClick: () => selectPlace(place)
+    }))
+  renderMarkers(specs)
 }
 
 const selectPlace = (place: ExplorePlace, openInfo = true) => {
@@ -372,24 +343,8 @@ const selectPlace = (place: ExplorePlace, openInfo = true) => {
 }
 
 const focusPlace = (place: ExplorePlace) => {
-  if (!map || !mapApi || !place.location) return
-  const position = new mapApi.LngLat(place.location.longitude, place.location.latitude)
-  map.setZoomAndCenter(15, position)
-  const infoWindow = new mapApi.InfoWindow({
-    content: `
-      <div style="padding:12px;max-width:280px;">
-        <h4 style="margin:0 0 8px 0;">${place.name}</h4>
-        <p style="margin:4px 0;">${place.address || ''}</p>
-        <p style="margin:4px 0;color:#0f766e;">${place.themeLabel} · ${place.keyword}</p>
-      </div>
-    `,
-    offset: new mapApi.Pixel(0, -30),
-    autoMove: false
-  })
-  infoWindow.open(map, position)
-  window.setTimeout(() => {
-    map?.setCenter(position)
-  }, 80)
+  if (!place.location) return
+  openInfoWindow(place.location.longitude, place.location.latitude, buildInfoHtml(place), FOCUS_MAP_ZOOM)
 }
 
 const getPlaceKey = (place: ExplorePlace) => {

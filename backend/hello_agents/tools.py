@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -41,17 +41,17 @@ class MCPTool:
             return key
         raise ValueError("高德地图API Key未配置")
 
-    def _request(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _request(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         request_params = {**params, "key": self._api_key(), "output": "JSON"}
         response = httpx.get(f"{AMAP_API_BASE}{path}", params=request_params, timeout=20.0)
         response.raise_for_status()
         data = response.json()
-        if data.get("status") not in {"1", 1, True}:
+        if data.get("status") not in {"1", 1}:
             raise ValueError(data.get("info", "高德地图接口返回失败"))
         return data
 
     @staticmethod
-    def _parse_location(location: str) -> Optional[Dict[str, float]]:
+    def _parse_location(location: str) -> dict[str, float] | None:
         if not location:
             return None
         try:
@@ -60,7 +60,7 @@ class MCPTool:
         except Exception:
             return None
 
-    def run(self, payload: Dict[str, Any]) -> str:
+    def run(self, payload: dict[str, Any]) -> str:
         try:
             tool_name = payload.get("tool_name", "")
             arguments = payload.get("arguments", {}) or {}

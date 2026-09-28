@@ -41,6 +41,13 @@
 helloagents-trip-planner/
 ├── backend/                    # 后端服务
 │   ├── app/
+│   │   ├── core/              # 基础设施层（本次改造新增）
+│   │   │   ├── logging.py         # 统一日志
+│   │   │   ├── cache.py           # TTL 缓存
+│   │   │   ├── retry.py           # 指数退避重试
+│   │   │   ├── json_utils.py      # LLM 输出容错 JSON 解析
+│   │   │   ├── job_store.py       # 带 TTL 的异步任务存储
+│   │   │   └── constants.py       # 常量与错误码
 │   │   ├── agents/            # Agent实现
 │   │   │   ├── __init__.py
 │   │   │   └── trip_planner_agent.py
@@ -55,7 +62,7 @@ helloagents-trip-planner/
 │   │   │       └── map.py          # 地图服务
 │   │   ├── services/          # 服务层
 │   │   │   ├── __init__.py
-│   │   │   ├── amap_service.py    # 高德地图服务
+│   │   │   ├── amap_service.py    # 高德地图服务（含缓存与重试）
 │   │   │   ├── llm_service.py     # LLM服务
 │   │   │   └── unsplash_service.py # Unsplash图片服务
 │   │   ├── models/            # 数据模型
@@ -66,10 +73,21 @@ helloagents-trip-planner/
 │   ├── hello_agents/          # HelloAgents框架
 │   │   ├── __init__.py
 │   │   └── tools.py
+│   ├── tests/                 # 单元与集成测试（本次改造新增）
+│   │   ├── conftest.py
+│   │   ├── test_api.py
+│   │   ├── test_core.py
+│   │   ├── test_json_utils.py
+│   │   └── test_trip_planner.py
+│   ├── scripts/               # 一次性运维/诊断脚本
+│   │   ├── diagnose_coordinates.py
+│   │   └── check_poi_fix.py
+│   ├── Dockerfile             # 后端镜像
+│   ├── pyproject.toml         # ruff / pytest 配置
 │   ├── requirements.txt
-│   ├── .env
-│   ├── .gitignore
-│   └── run.py                 # 启动脚本
+│   ├── requirements-dev.txt
+│   ├── .env.example
+│   └── run.py                 # 开发环境启动脚本
 ├── frontend/                   # 前端应用
 │   ├── src/
 │   │   ├── views/             # 页面视图
@@ -77,6 +95,16 @@ helloagents-trip-planner/
 │   │   │   ├── Result.vue     # 结果页
 │   │   │   ├── History.vue    # 历史记录
 │   │   │   └── Explore.vue    # 探索页
+│   │   ├── components/        # 可复用组件
+│   │   ├── composables/       # 组合式函数（本次改造新增）
+│   │   │   └── useAMap.ts         # 高德地图统一封装（自动销毁）
+│   │   ├── config/            # 前端配置（本次改造新增）
+│   │   │   └── index.ts
+│   │   ├── utils/             # 工具函数（本次改造新增）
+│   │   │   ├── logger.ts
+│   │   │   ├── format.ts
+│   │   │   ├── image.ts
+│   │   │   └── export.ts
 │   │   ├── services/          # API服务
 │   │   │   ├── api.ts
 │   │   │   └── history.ts
@@ -84,12 +112,15 @@ helloagents-trip-planner/
 │   │   │   └── index.ts
 │   │   ├── App.vue
 │   │   └── main.ts
+│   ├── Dockerfile             # 前端镜像（多阶段构建 + Nginx）
+│   ├── nginx.conf             # Nginx 配置（静态托管 + /api 反代）
 │   ├── package.json
 │   ├── tsconfig.json
 │   ├── vite.config.ts
-│   ├── .env
-│   ├── .gitignore
+│   ├── .env.example
 │   └── index.html
+├── docker-compose.yml          # 一键部署前后端
+├── IMPROVEMENTS.md             # 本次调研与改进报告
 └── README.md
 ```
 
@@ -175,6 +206,50 @@ npm run dev
 ```
 
 5. 打开浏览器访问 `http://localhost:5173`
+
+### 🐳 Docker 一键部署
+
+```bash
+# 1. 准备后端环境变量
+cp backend/.env.example backend/.env
+#    编辑 backend/.env，填入 AMAP_API_KEY / LLM_API_KEY 等
+
+# 2. （可选）根目录 .env 提供前端构建期的地图 Key
+echo "VITE_AMAP_WEB_JS_KEY=你的高德JSKey" > .env
+
+# 3. 启动
+docker compose up -d --build
+```
+
+启动后：
+
+- 前端：`http://localhost:8080`
+- 后端 API 文档：`http://localhost:8000/docs`
+
+前端容器由 Nginx 托管，并自动把 `/api` 反向代理到后端容器。
+
+### 🧪 运行测试
+
+```bash
+cd backend
+python -m pip install -r requirements-dev.txt
+
+# 单元 + 集成测试（不依赖真实密钥与网络）
+python -m pytest -q
+
+# 静态检查
+python -m ruff check app hello_agents tests
+```
+
+前端类型检查与构建：
+
+```bash
+cd frontend
+npm run type-check
+npm run build
+```
+
+> 关于本次针对性能、健壮性与工程化的具体改动，见 [IMPROVEMENTS.md](./IMPROVEMENTS.md)。
 
 ## 📝 使用指南
 

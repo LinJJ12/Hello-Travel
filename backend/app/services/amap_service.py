@@ -1,60 +1,120 @@
-"""高德地图服务封装 - 直接 HTTP API 实现"""
+"""高德地图服务封装 - 直接 HTTP API 实现。
 
-import json
-from typing import List, Dict, Any, Optional, Tuple
+改进点：
+- 用统一日志替代 ``print``
+- 为 POI / 天气 / 地理编码结果增加进程内 TTL 缓存，减少重复请求与配额消耗
+- 外部请求增加指数退避重试，缓解网络抖动
+- 新增 ``search_pois_multi``：多关键词并行搜索并去重，提升景点召回
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import httpx
 
 from ..config import get_settings
+from ..core.cache import TTLCache
+from ..core.constants import AMAP_TIMEOUT, RETRY_ATTEMPTS, RETRY_BASE_DELAY, RETRY_MAX_DELAY
+from ..core.logging import get_logger
+from ..core.retry import retry_sync
 from ..models.schemas import Location, POIInfo, WeatherInfo
 
+logger = get_logger(__name__)
 
 AMAP_API_BASE = "https://restapi.amap.com"
 
+# 需要重试的底层异常（网络类）
+_RETRYABLE = (httpx.HTTPError, OSError)
+
 
 class AmapService:
-    """高德地图服务封装类"""
-    
-    def __init__(self):
-        """初始化服务"""
+    """高德地图服务封装类。"""
+
+    def __init__(self) -> None:
         settings = get_settings()
         if not settings.amap_api_key:
             raise ValueError("高德地图API Key未配置,请在.env文件中设置AMAP_API_KEY")
         self.api_key = settings.amap_api_key
+        ttl = max(0.0, float(settings.amap_cache_ttl))
+        self._cache = TTLCache(ttl=ttl or 0.01, maxsize=1024)
 
-    def _request(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """发送 HTTP 请求到高德 API"""
-        request_params = {**params, "key": self.api_key, "output": "JSON"}
-        response = httpx.get(f"{AMAP_API_BASE}{path}", params=request_params, timeout=20.0)
-        response.raise_for_status()
-        data = response.json()
-        if data.get("status") not in {"1", 1, True}:
+    # ------------------------------------------------------------------ #
+    # 底层请求
+    # ------------------------------------------------------------------ #
+    def _request(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        """发送 HTTP 请求到高德 API（带重试）。"""
+
+        def _call() -> dict[str, Any]:
+            request_params = {**params, "key": self.api_key, "output": "JSON"}
+            response = httpx.get(
+                f"{AMAP_API_BASE}{path}", params=request_params, timeout=AMAP_TIMEOUT
+            )
+            response.raise_for_status()
+            return response.json()
+
+        def _on_retry(attempt: int, exc: BaseException, delay: float) -> None:
+            logger.warning("高德接口 %s 第 %s 次失败(%s)，%.1fs 后重试", path, attempt, exc, delay)
+
+        data = retry_sync(
+            _call,
+            attempts=RETRY_ATTEMPTS,
+            base_delay=RETRY_BASE_DELAY,
+            max_delay=RETRY_MAX_DELAY,
+            exceptions=_RETRYABLE,
+            on_retry=_on_retry,
+        )
+        if data.get("status") not in {"1", 1}:
             raise ValueError(data.get("info", "高德地图接口返回失败"))
         return data
 
     @staticmethod
-    def _parse_location(location_str: str) -> Optional[Location]:
-        """从经纬度字符串解析成 Location 对象"""
+    def _parse_location(location_str: str) -> Location | None:
+        """从经纬度字符串解析成 Location 对象。"""
         if not location_str:
             return None
         try:
             longitude, latitude = location_str.split(",")
             return Location(longitude=float(longitude), latitude=float(latitude))
-        except Exception:
+        except (ValueError, AttributeError):
             return None
-    
-    def search_poi(self, keywords: str, city: str, citylimit: bool = True) -> List[POIInfo]:
-        """
-        搜索POI
-        
-        Args:
-            keywords: 搜索关键词
-            city: 城市
-            citylimit: 是否限制在城市范围内
-            
-        Returns:
-            POI信息列表
-        """
+
+    @staticmethod
+    def _normalize_tel(tel: Any) -> str | None:
+        if isinstance(tel, list):
+            return tel[0] if tel else None
+        if isinstance(tel, str):
+            return tel or None
+        return None
+
+    def _poi_from_item(self, item: dict[str, Any]) -> POIInfo | None:
+        location = self._parse_location(item.get("location", ""))
+        if not location:
+            return None
+        return POIInfo(
+            id=item.get("id", ""),
+            name=item.get("name", ""),
+            type=item.get("type", ""),
+            address=item.get("address", ""),
+            location=location,
+            tel=self._normalize_tel(item.get("tel")),
+        )
+
+    # ------------------------------------------------------------------ #
+    # POI 搜索
+    # ------------------------------------------------------------------ #
+    def search_poi(
+        self, keywords: str, city: str, citylimit: bool = True, limit: int = 10
+    ) -> list[POIInfo]:
+        """搜索 POI（带缓存）。"""
+        cache_key = f"poi::{keywords}::{city}::{citylimit}::{limit}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.debug("POI 命中缓存: %s @ %s", keywords, city)
+            return cached
+
         try:
             data = self._request(
                 "/v3/place/text",
@@ -64,73 +124,81 @@ class AmapService:
                     "citylimit": str(citylimit).lower(),
                 },
             )
+            pois: list[POIInfo] = []
+            for item in data.get("pois", [])[:limit]:
+                poi = self._poi_from_item(item)
+                if poi:
+                    pois.append(poi)
 
-            pois: List[POIInfo] = []
-            for item in data.get("pois", [])[:10]:
-                location = self._parse_location(item.get("location", ""))
-                if not location:
-                    continue
-                
-                # 处理 tel 字段 - 高德 API 返回的可能是列表或字符串
-                tel = item.get("tel")
-                if isinstance(tel, list):
-                    tel = tel[0] if tel else None
-                elif not isinstance(tel, str):
-                    tel = None
-                
-                pois.append(
-                    POIInfo(
-                        id=item.get("id", ""),
-                        name=item.get("name", ""),
-                        type=item.get("type", ""),
-                        address=item.get("address", ""),
-                        location=location,
-                        tel=tel,
-                    )
-                )
-
-            # 详细日志
-            print(f"✅ POI搜索结果: 成功解析 {len(pois)} 个POI")
-            for i, poi in enumerate(pois[:3], 1):
-                print(f"   {i}. {poi.name}")
-                print(f"      地址: {poi.address}")
-                print(f"      坐标: ({poi.location.longitude}, {poi.location.latitude})")
-            if len(pois) > 3:
-                print(f"   ... 还有 {len(pois)-3} 个POI")
+            logger.info("POI 搜索 '%s' @ %s → %s 条", keywords, city, len(pois))
+            self._cache.set(cache_key, pois)
             return pois
 
-        except Exception as e:
-            print(f"❌ POI搜索失败: {str(e)}")
+        except Exception as exc:  # noqa: BLE001 - 对外统一降级为空列表
+            logger.error("POI 搜索失败 '%s' @ %s: %s", keywords, city, exc)
             return []
-    
-    def get_weather(self, city: str) -> List[WeatherInfo]:
+
+    def search_pois_multi(
+        self,
+        keywords: Sequence[str],
+        city: str,
+        per_keyword: int = 8,
+        max_workers: int = 4,
+    ) -> list[POIInfo]:
+        """多关键词并行搜索并按 POI id / 名称去重。
+
+        原实现只取 ``preferences[0]`` 一个关键词，召回有限；这里并行发起多个
+        关键词查询并合并结果，显著提升景点覆盖面。
         """
-        查询天气
-        
-        Args:
-            city: 城市名称
-            
-        Returns:
-            天气信息列表
-        """
+        terms = [term.strip() for term in keywords if term and term.strip()]
+        if not terms:
+            return []
+
+        merged: list[POIInfo] = []
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(terms))) as pool:
+            futures = [pool.submit(self.search_poi, term, city, True, per_keyword) for term in terms]
+            for future in futures:
+                try:
+                    merged.extend(future.result())
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("并行 POI 搜索子任务失败: %s", exc)
+
+        seen: set[str] = set()
+        deduped: list[POIInfo] = []
+        for poi in merged:
+            key = poi.id or f"{poi.name}::{poi.address}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(poi)
+
+        logger.info("多关键词 POI 搜索 %s @ %s → 合并去重后 %s 条", list(terms), city, len(deduped))
+        return deduped
+
+    # ------------------------------------------------------------------ #
+    # 天气
+    # ------------------------------------------------------------------ #
+    def get_weather(self, city: str) -> list[WeatherInfo]:
+        """查询天气（带缓存）。"""
+        cache_key = f"weather::{city}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.debug("天气命中缓存: %s", city)
+            return cached
+
         try:
-            # 先地理编码获取城市代码
             _, adcode = self._geocode_meta(city)
             weather_query = adcode or city
-            
+
             data = self._request(
                 "/v3/weather/weatherInfo",
-                {
-                    "city": weather_query,
-                    "extensions": "all",
-                },
+                {"city": weather_query, "extensions": "all"},
             )
 
-            weather_list: List[WeatherInfo] = []
+            weather_list: list[WeatherInfo] = []
             forecasts = data.get("forecasts") or []
             if forecasts:
-                casts = forecasts[0].get("casts", [])
-                for cast in casts:
+                for cast in forecasts[0].get("casts", []):
                     weather_list.append(
                         WeatherInfo(
                             date=cast.get("date", ""),
@@ -143,50 +211,46 @@ class AmapService:
                         )
                     )
 
-            print(f"✅ 天气查询结果: 成功解析 {len(weather_list)} 天天气数据")
+            logger.info("天气查询 %s → %s 天", city, len(weather_list))
+            self._cache.set(cache_key, weather_list)
             return weather_list
 
-        except Exception as e:
-            print(f"❌ 天气查询失败: {str(e)}")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("天气查询失败 %s: %s", city, exc)
             return []
-    
-    def _geocode_meta(self, city: str) -> Tuple[Optional[Location], Optional[str]]:
-        """地理编码，获取坐标和行政区代码"""
+
+    def _geocode_meta(self, city: str) -> tuple[Location | None, str | None]:
+        """地理编码，获取坐标和行政区代码（带缓存）。"""
+        cache_key = f"geocode_meta::{city}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
-            data = self._request(
-                "/v3/geocode/geo",
-                {"address": city},
-            )
+            data = self._request("/v3/geocode/geo", {"address": city})
             geocodes = data.get("geocodes") or []
             if not geocodes:
                 return None, None
             first = geocodes[0]
-            return self._parse_location(first.get("location", "")), first.get("adcode")
-        except Exception as e:
-            print(f"⚠️ 地理编码失败: {str(e)}")
+            result = (self._parse_location(first.get("location", "")), first.get("adcode"))
+            self._cache.set(cache_key, result)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("地理编码失败 %s: %s", city, exc)
             return None, None
 
+    # ------------------------------------------------------------------ #
+    # 路线规划
+    # ------------------------------------------------------------------ #
     def plan_route(
         self,
         origin_address: str,
         destination_address: str,
-        origin_city: Optional[str] = None,
-        destination_city: Optional[str] = None,
-        route_type: str = "walking"
-    ) -> Dict[str, Any]:
-        """
-        规划路线
-        
-        Args:
-            origin_address: 起点地址
-            destination_address: 终点地址
-            origin_city: 起点城市
-            destination_city: 终点城市
-            route_type: 路线类型 (walking/driving/transit)
-            
-        Returns:
-            路线信息
-        """
+        origin_city: str | None = None,
+        destination_city: str | None = None,
+        route_type: str = "walking",
+    ) -> dict[str, Any]:
+        """规划路线。失败或无法解析时返回 ``{}``。"""
         try:
             origin_location = self.geocode(origin_address, origin_city)
             destination_location = self.geocode(destination_address, destination_city)
@@ -202,7 +266,7 @@ class AmapService:
                 "transit": "/v3/direction/transit/integrated",
             }
             path = route_map.get(route_type, "/v3/direction/walking")
-            params: Dict[str, Any] = {"origin": origin, "destination": destination}
+            params: dict[str, Any] = {"origin": origin, "destination": destination}
             if origin_city:
                 params["city"] = origin_city
             if destination_city:
@@ -213,11 +277,7 @@ class AmapService:
 
             distance = 0.0
             duration = 0
-            if route_type == "walking" and route.get("paths"):
-                first = route["paths"][0]
-                distance = float(first.get("distance", 0) or 0)
-                duration = int(float(first.get("duration", 0) or 0))
-            elif route_type == "driving" and route.get("paths"):
+            if route_type in {"walking", "driving"} and route.get("paths"):
                 first = route["paths"][0]
                 distance = float(first.get("distance", 0) or 0)
                 duration = int(float(first.get("duration", 0) or 0))
@@ -233,67 +293,57 @@ class AmapService:
                 "description": f"{route_type}路线规划结果",
             }
 
-        except Exception as e:
-            print(f"❌ 路线规划失败: {str(e)}")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("路线规划失败: %s", exc)
             return {}
-    
-    def geocode(self, address: str, city: Optional[str] = None) -> Optional[Location]:
-        """
-        地理编码(地址转坐标)
 
-        Args:
-            address: 地址
-            city: 城市
+    def geocode(self, address: str, city: str | None = None) -> Location | None:
+        """地理编码（地址转坐标，带缓存）。"""
+        cache_key = f"geocode::{address}::{city}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
 
-        Returns:
-            经纬度坐标
-        """
         try:
-            params: Dict[str, Any] = {"address": address}
+            params: dict[str, Any] = {"address": address}
             if city:
                 params["city"] = city
             data = self._request("/v3/geocode/geo", params)
             geocodes = data.get("geocodes") or []
             if not geocodes:
                 return None
-            return self._parse_location(geocodes[0].get("location", ""))
+            location = self._parse_location(geocodes[0].get("location", ""))
+            if location:
+                self._cache.set(cache_key, location)
+            return location
 
-        except Exception as e:
-            print(f"❌ 地理编码失败: {str(e)}")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("地理编码失败: %s", exc)
             return None
 
-    def get_poi_detail(self, poi_id: str) -> Dict[str, Any]:
-        """
-        获取POI详情
+    def get_poi_detail(self, poi_id: str) -> dict[str, Any]:
+        """获取 POI 详情。"""
+        cache_key = f"poi_detail::{poi_id}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
 
-        Args:
-            poi_id: POI ID
-
-        Returns:
-            POI详情信息
-        """
         try:
-            data = self._request(
-                "/v5/place/detail",
-                {"id": poi_id},
-            )
+            data = self._request("/v5/place/detail", {"id": poi_id})
+            self._cache.set(cache_key, data)
             return data
-
-        except Exception as e:
-            print(f"❌ 获取POI详情失败: {str(e)}")
-            return {"id": poi_id, "error": str(e)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("获取POI详情失败: %s", exc)
+            return {"id": poi_id, "error": str(exc)}
 
 
 # 创建全局服务实例
-_amap_service = None
+_amap_service: AmapService | None = None
 
 
 def get_amap_service() -> AmapService:
-    """获取高德地图服务实例(单例模式)"""
+    """获取高德地图服务实例（单例模式）。"""
     global _amap_service
-    
     if _amap_service is None:
         _amap_service = AmapService()
-    
     return _amap_service
-

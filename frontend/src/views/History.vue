@@ -63,6 +63,8 @@ import {
   getTripHistoryList,
   setActiveHistoryId
 } from '@/services/history'
+import { formatDateTime } from '@/utils/format'
+import logger from '@/utils/logger'
 
 const router = useRouter()
 const historyList = ref<TripHistoryItem[]>([])
@@ -93,22 +95,28 @@ const openHistory = (id: string) => {
 }
 
 const removeHistory = (id: string) => {
-  deleteTripHistory(id)
-  loadHistory()
-  message.success('历史记录已删除')
+  try {
+    deleteTripHistory(id)
+    loadHistory()
+    message.success('历史记录已删除')
+  } catch (error) {
+    logger.error('删除历史记录失败:', error)
+    message.error('删除失败，请稍后重试')
+  }
 }
 
 const clearAll = () => {
-  clearTripHistory()
-  loadHistory()
-  message.success('历史记录已清空')
+  try {
+    clearTripHistory()
+    loadHistory()
+    message.success('历史记录已清空')
+  } catch (error) {
+    logger.error('清空历史记录失败:', error)
+    message.error('清空失败，请稍后重试')
+  }
 }
 
-const formatTime = (iso: string): string => {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return iso
-  return date.toLocaleString('zh-CN', { hour12: false })
-}
+const formatTime = (iso: string): string => formatDateTime(iso)
 </script>
 
 <style scoped>

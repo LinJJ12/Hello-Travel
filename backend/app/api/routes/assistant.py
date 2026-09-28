@@ -1,6 +1,11 @@
-"""行程增强能力 API：知识图谱与伴游问答"""
+"""行程增强能力 API：知识图谱与伴游问答。"""
+
+from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+
+from ...core.constants import ErrorCode
+from ...core.logging import get_logger
 from ...models.schemas import (
     GraphEdge,
     GraphNode,
@@ -11,7 +16,12 @@ from ...models.schemas import (
 )
 from ...services.llm_service import get_llm
 
+logger = get_logger(__name__)
+
 router = APIRouter(prefix="/assistant", tags=["行程增强"])
+
+# 知识图谱节点类型 -> 展示权重（前端可据此调整节点大小）
+_CATEGORY_ORDER = ("trip", "budget", "day", "hotel", "attraction", "meal")
 
 
 def _node_id(*parts: object) -> str:
@@ -20,13 +30,13 @@ def _node_id(*parts: object) -> str:
 
 def build_knowledge_graph(plan: TripPlan) -> KnowledgeGraphResponse:
     """把行程计划转换成前端可视化知识图谱。"""
-    nodes = [
-        GraphNode(id="trip", label=f"{plan.city}旅行计划", category="trip"),
-    ]
+    nodes = [GraphNode(id="trip", label=f"{plan.city}旅行计划", category="trip")]
     edges = []
 
     if plan.budget:
-        nodes.append(GraphNode(id="budget", label=f"预算 ¥{plan.budget.total}", category="budget", value=plan.budget.total))
+        nodes.append(
+            GraphNode(id="budget", label=f"预算 ¥{plan.budget.total}", category="budget", value=plan.budget.total)
+        )
         edges.append(GraphEdge(source="trip", target="budget", relation="预估费用"))
 
     for day in plan.days:
@@ -36,7 +46,9 @@ def build_knowledge_graph(plan: TripPlan) -> KnowledgeGraphResponse:
 
         if day.hotel:
             hotel_id = _node_id("hotel", day.day_index)
-            nodes.append(GraphNode(id=hotel_id, label=day.hotel.name, category="hotel", value=day.hotel.estimated_cost))
+            nodes.append(
+                GraphNode(id=hotel_id, label=day.hotel.name, category="hotel", value=day.hotel.estimated_cost)
+            )
             edges.append(GraphEdge(source=day_id, target=hotel_id, relation="住宿"))
 
         for index, attraction in enumerate(day.attractions):
@@ -60,12 +72,13 @@ def build_knowledge_graph(plan: TripPlan) -> KnowledgeGraphResponse:
 
 
 @router.post("/knowledge-graph", response_model=KnowledgeGraphResponse, summary="生成行程知识图谱")
-async def knowledge_graph(plan: TripPlan):
+async def knowledge_graph(plan: TripPlan) -> KnowledgeGraphResponse:
     return build_knowledge_graph(plan)
 
 
 @router.post("/chat", response_model=TripChatResponse, summary="行程伴游问答")
-async def trip_chat(request: TripChatRequest):
+def trip_chat(request: TripChatRequest) -> TripChatResponse:
+    """行程伴游问答（同步路由：内部为阻塞式 LLM 调用）。"""
     try:
         plan = request.trip_plan
         itinerary = []
@@ -85,9 +98,12 @@ async def trip_chat(request: TripChatRequest):
 
 用户问题: {request.question}
 """
-
         llm = get_llm()
         answer = llm.generate(prompt, temperature=0.3, max_tokens=800)
         return TripChatResponse(answer=answer)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"伴游问答失败: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("伴游问答失败: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail={"code": ErrorCode.LLM_ERROR, "message": f"伴游问答失败: {exc}"},
+        ) from exc

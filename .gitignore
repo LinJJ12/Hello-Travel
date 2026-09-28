@@ -59,3 +59,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# 本地验证产物（浏览器截图等）
+.verify/
+
+# AI 助手工作目录（本地记忆/会话数据）
+.workbuddy-ai/

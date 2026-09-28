@@ -1,0 +1,20 @@
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501",  # 行长由 formatter 处理
+    "B008",  # FastAPI 的 Depends/Query 默认值是惯用写法
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试与一次性运维脚本允许 assert / 先 sys.path 再 import 的写法
+"tests/*" = ["S101"]
+"scripts/*" = ["E402"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"

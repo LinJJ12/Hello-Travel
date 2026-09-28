@@ -15,6 +15,11 @@ export interface Attraction {
   rating?: number
   image_url?: string
   ticket_price?: number
+  poi_id?: string
+  /** 是否需要提前实名预约 / 抢票 */
+  needs_reservation?: boolean
+  /** 预约提示文案 */
+  reservation_note?: string
 }
 
 export interface Meal {
