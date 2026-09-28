@@ -1,5 +1,10 @@
 // 类型定义
 
+export interface CityStay {
+  city: string
+  days: number
+}
+
 export interface Location {
   longitude: number
   latitude: number
@@ -15,11 +20,6 @@ export interface Attraction {
   rating?: number
   image_url?: string
   ticket_price?: number
-  poi_id?: string
-  /** 是否需要提前实名预约 / 抢票 */
-  needs_reservation?: boolean
-  /** 预约提示文案 */
-  reservation_note?: string
 }
 
 export interface Meal {
@@ -47,12 +47,16 @@ export interface Budget {
   total_hotels: number
   total_meals: number
   total_transportation: number
+  total_inter_city_transport?: number
   total: number
 }
 
 export interface DayPlan {
   date: string
   day_index: number
+  city?: string
+  is_transfer_day?: boolean
+  transfer_info?: string
   description: string
   transportation: string
   accommodation: string
@@ -63,6 +67,7 @@ export interface DayPlan {
 
 export interface WeatherInfo {
   date: string
+  city?: string
   day_weather: string
   night_weather: string
   day_temp: number
@@ -73,6 +78,7 @@ export interface WeatherInfo {
 
 export interface TripPlan {
   city: string
+  cities?: string[]
   start_date: string
   end_date: string
   days: DayPlan[]
@@ -83,82 +89,125 @@ export interface TripPlan {
 
 export interface TripFormData {
   city: string
-  destinations?: string[]
+  cities?: CityStay[]
   start_date: string
   end_date: string
   travel_days: number
   transportation: string
   accommodation: string
   preferences: string[]
-  budget_per_person?: number
-  travel_pace?: string
-  companions?: string
-  dietary_restrictions?: string
   free_text_input: string
-}
-
-export interface TripPlanProgress {
-  status: 'pending' | 'done' | 'failed'
-  stage?: string
-  progress?: number
-  message?: string
+  language?: string
+  user_id?: string
 }
 
 export interface TripPlanResponse {
   success: boolean
   message: string
+  plan_id?: string
   data?: TripPlan
+  graph_data?: KnowledgeGraphData
 }
 
-
 export interface TripHistoryItem {
-  id: string
-  createdAt: string
-  updatedAt: string
+  plan_id: string
+  task_id: string
   city: string
   start_date: string
   end_date: string
   travel_days: number
-  preferences: string[]
-  transportation: string
-  accommodation: string
-  budget_per_person?: number
-  travel_pace?: string
-  companions?: string
-  dietary_restrictions?: string
-  data: TripPlan
+  updated_at: string
+  overall_suggestions?: string
 }
+
+export type TripTaskStatus = 'processing' | 'completed' | 'failed'
+
+export type TripTaskStage =
+  | 'submitted'
+  | 'initializing'
+  | 'attraction_search'
+  | 'weather_search'
+  | 'hotel_search'
+  | 'planning'
+  | 'graph_building'
+  | 'completed'
+  | 'failed'
+
+export interface TripTaskEvent {
+  task_id: string
+  plan_id: string
+  status: TripTaskStatus
+  stage: TripTaskStage
+  progress: number
+  message: string
+  error?: string
+  result?: TripPlanResponse
+}
+
+export interface BackendRuntimeSettings {
+  vite_amap_web_key: string
+  vite_amap_web_js_key: string
+  google_maps_api_key: string
+  google_maps_proxy: string
+  xhs_cookie: string
+  openai_api_key: string
+  openai_base_url: string
+  openai_model: string
+}
+
+export interface RuntimeSettings {
+  api_base_url: string
+  vite_amap_web_key: string
+  vite_amap_web_js_key: string
+  google_maps_api_key: string
+  google_maps_proxy: string
+  xhs_cookie: string
+  openai_api_key: string
+  openai_base_url: string
+  openai_model: string
+}
+
+// ============ 知识图谱类型 ============
 
 export interface GraphNode {
   id: string
-  label: string
-  category: string
-  value?: number | string
+  name: string
+  category: number
+  symbolSize: number
+  itemStyle?: { color: string }
+  value?: string
 }
 
 export interface GraphEdge {
   source: string
   target: string
-  relation: string
+  label?: string
 }
 
-export interface KnowledgeGraphResponse {
-  success: boolean
+export interface GraphCategory {
+  name: string
+}
+
+export interface KnowledgeGraphData {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  categories: GraphCategory[]
 }
 
-export interface POIInfo {
-  id?: string
-  name: string
-  type?: string
-  address?: string
-  location: Location
-  tel?: string
+// ============ AI 行程问答类型 ============
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
 }
 
-export interface ExplorePlace extends POIInfo {
-  theme: string
-  themeLabel: string
-  keyword: string
+export interface TripChatRequest {
+  message: string
+  trip_plan: object
+  history: ChatMessage[]
+}
+
+export interface TripChatResponse {
+  success: boolean
+  reply: string
 }

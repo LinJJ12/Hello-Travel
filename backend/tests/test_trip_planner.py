@@ -1,144 +1,243 @@
-"""行程规划 Agent 的对齐 / 兜底逻辑测试（不依赖网络与真实密钥）。"""
+"""行程规划 Agent 的解析 / 查询构建 / 兜底逻辑测试（不依赖网络与真实密钥）。"""
 
 from __future__ import annotations
 
+import json
+
 from app.agents.trip_planner_agent import MultiAgentTripPlanner
-from app.models.schemas import Location, POIInfo, TripRequest
+from app.models.schemas import CityStay, TripRequest
+from app.services.knowledge_graph_service import build_knowledge_graph
 
 
-def _poi(poi_id: str, name: str, lng: float = 116.4, lat: float = 39.9, type_: str = "风景名胜") -> POIInfo:
-    return POIInfo(
-        id=poi_id,
-        name=name,
-        type=type_,
-        address=f"{name}地址",
-        location=Location(longitude=lng, latitude=lat),
+def _bare_planner() -> MultiAgentTripPlanner:
+    """构造一个跳过 __init__ 的实例，仅用于测试纯逻辑方法。
+
+    ``__init__`` 需要真实 LLM 与地图工具，这里不触碰。
+    """
+    return object.__new__(MultiAgentTripPlanner)
+
+
+def _request() -> TripRequest:
+    return TripRequest(
+        city="杭州",
+        start_date="2026-10-01",
+        end_date="2026-10-01",
+        travel_days=1,
+        transportation="步行",
+        accommodation="舒适型酒店",
     )
 
 
-def _planner(attractions=None, hotels=None) -> MultiAgentTripPlanner:
-    """构造一个跳过 __init__ 的实例，仅用于测试纯逻辑方法。"""
-    planner = object.__new__(MultiAgentTripPlanner)
-    planner._real_attractions = attractions or []
-    planner._real_weather = []
-    planner._real_hotels = hotels or []
-    return planner
-
-
-def test_attractions_aligned_to_search_results():
-    planner = _planner(attractions=[_poi("A1", "故宫博物院"), _poi("A2", "天坛公园")])
-    data = {
+def _plan_dict() -> dict:
+    return {
+        "city": "杭州",
+        "cities": ["杭州"],
+        "start_date": "2026-10-01",
+        "end_date": "2026-10-01",
         "days": [
             {
+                "date": "2026-10-01",
+                "day_index": 0,
+                "city": "杭州",
+                "description": "西湖一日游",
+                "transportation": "步行",
+                "accommodation": "舒适型酒店",
                 "attractions": [
-                    {"name": "故宫博物院", "address": "旧地址", "location": {"longitude": 0, "latitude": 0},
-                     "description": "很棒", "ticket_price": 60},
-                    {"name": "天坛公园", "address": "x", "location": {"longitude": 0, "latitude": 0}},
-                ]
+                    {
+                        "name": "西湖",
+                        "address": "杭州市西湖区",
+                        "location": {"longitude": 120.15, "latitude": 30.25},
+                        "visit_duration": 180,
+                        "description": "著名景区",
+                        "ticket_price": 0,
+                    }
+                ],
+                "meals": [],
             }
-        ]
+        ],
+        "weather_info": [],
+        "overall_suggestions": "注意防晒",
+        "budget": {
+            "total_attractions": 0,
+            "total_hotels": 400,
+            "total_meals": 160,
+            "total_transportation": 0,
+            "total_inter_city_transport": 0,
+            "total": 560,
+        },
     }
-    planner._enforce_attractions_from_search_results(data, planner._real_attractions)
-
-    names = [a["name"] for a in data["days"][0]["attractions"]]
-    assert names == ["故宫博物院", "天坛公园"]
-    # 坐标被替换为真实值
-    assert data["days"][0]["attractions"][0]["location"] == {"longitude": 116.4, "latitude": 39.9}
-    # 保留 LLM 的文案与费用
-    assert data["days"][0]["attractions"][0]["description"] == "很棒"
-    assert data["days"][0]["attractions"][0]["ticket_price"] == 60
-    # 地址被真实地址覆盖
-    assert data["days"][0]["attractions"][0]["address"] == "故宫博物院地址"
 
 
-def test_invented_attraction_replaced_by_real_poi():
-    planner = _planner(attractions=[_poi("A1", "西湖"), _poi("A2", "灵隐寺")])
-    data = {"days": [{"attractions": [{"name": "某个不存在的景点", "location": {"longitude": 1, "latitude": 1}}]}]}
-    planner._enforce_attractions_from_search_results(data, planner._real_attractions)
-
-    result = data["days"][0]["attractions"]
-    assert len(result) == 1
-    assert result[0]["name"] in {"西湖", "灵隐寺"}
-    assert result[0]["poi_id"] in {"A1", "A2"}
+def _raw_json() -> str:
+    return json.dumps(_plan_dict(), ensure_ascii=False)
 
 
-def test_duplicate_attraction_across_days_deduped():
-    planner = _planner(attractions=[_poi("A1", "西湖"), _poi("A2", "灵隐寺")])
-    data = {
-        "days": [
-            {"attractions": [{"name": "西湖"}]},
-            {"attractions": [{"name": "西湖"}]},
-        ]
-    }
-    planner._enforce_attractions_from_search_results(data, planner._real_attractions)
-
-    day0 = {a["name"] for a in data["days"][0]["attractions"]}
-    day1 = {a["name"] for a in data["days"][1]["attractions"]}
-    assert day0 == {"西湖"}
-    # 第二天不应再重复西湖，而是回填另一个未使用的真实景点
-    assert "西湖" not in day1
-    assert day1 == {"灵隐寺"}
+# --------------------------------------------------------------------------- #
+# _parse_response：第一道防线 extract_json（app.core.json_utils）
+# --------------------------------------------------------------------------- #
+def test_parse_response_handles_fenced_json():
+    planner = _bare_planner()
+    plan = planner._parse_response(f"```json\n{_raw_json()}\n```", _request())
+    assert plan.city == "杭州"
+    assert len(plan.days) == 1
+    assert plan.days[0].attractions[0].name == "西湖"
 
 
-def test_reservation_flag_detected():
-    assert MultiAgentTripPlanner._needs_reservation("故宫博物院") is True
-    assert MultiAgentTripPlanner._needs_reservation("秦始皇兵马俑博物馆") is True
-    assert MultiAgentTripPlanner._needs_reservation("西湖") is False
+def test_parse_response_handles_leading_and_trailing_prose():
+    planner = _bare_planner()
+    raw = f"好的，以下是为您规划的行程：\n{_raw_json()}\n希望对您有帮助！"
+    plan = planner._parse_response(raw, _request())
+    assert plan.city == "杭州"
 
 
-def test_hotels_forced_to_search_results():
-    hotels = [_poi("H1", "如家酒店(王府井店)", type_="住宿服务")]
-    planner = _planner(hotels=hotels)
-    data = {"days": [{"hotel": {"name": "如家快捷酒店", "estimated_cost": 300}}]}
-    planner._enforce_hotels_from_search_results(data, hotels)
-
-    hotel = data["days"][0]["hotel"]
-    assert hotel["name"] == "如家酒店(王府井店)"
-    assert hotel["estimated_cost"] == 300  # LLM 估算保留
+def test_parse_response_handles_trailing_comma():
+    planner = _bare_planner()
+    # 真正的「尾逗号」：在最后一个 } 之前多出一个逗号
+    broken = _raw_json()[:-1] + ",}"
+    plan = planner._parse_response(broken, _request())
+    assert plan.overall_suggestions == "注意防晒"
 
 
-def test_ensure_budget_computed_when_missing():
-    data = {
-        "days": [
-            {
-                "attractions": [{"ticket_price": 60}, {"ticket_price": 40}],
-                "meals": [{"estimated_cost": 30}, {"estimated_cost": 50}, {"estimated_cost": 80}],
-                "hotel": {"estimated_cost": 400},
-            }
-        ]
-    }
-    MultiAgentTripPlanner._ensure_budget(data)
-    assert data["budget"]["total_attractions"] == 100
-    assert data["budget"]["total_meals"] == 160
-    assert data["budget"]["total_hotels"] == 400
-    assert data["budget"]["total"] == 660
+def test_parse_response_handles_duplicate_comma():
+    """LLM 偶发双逗号（",,"）时也应能正常解析。
 
-
-def test_ensure_budget_keeps_existing():
-    data = {"days": [], "budget": {"total": 999}}
-    MultiAgentTripPlanner._ensure_budget(data)
-    assert data["budget"]["total"] == 999
-
-
-def test_fallback_plan_uses_real_pois():
-    planner = _planner(
-        attractions=[_poi("A1", "西湖"), _poi("A2", "灵隐寺"), _poi("A3", "雷峰塔")],
-        hotels=[_poi("H1", "杭州某酒店", type_="住宿服务")],
+    注：此处刻意在中间字段后追加逗号，形成 `,,`；原用例误把这种输入当成
+    「尾逗号」场景，导致断言的是错误行为。
+    """
+    planner = _bare_planner()
+    broken = _raw_json().replace(
+        '"overall_suggestions": "注意防晒"',
+        '"overall_suggestions": "注意防晒",',
     )
+    assert ",," in broken
+    plan = planner._parse_response(broken, _request())
+    assert plan.overall_suggestions == "注意防晒"
+
+
+def test_parse_response_handles_truncated_output():
+    """max_tokens 截断导致末尾括号不闭合时，应能自动补齐。"""
+    planner = _bare_planner()
+    truncated = _raw_json()[: _raw_json().rfind("}")]
+    plan = planner._parse_response(truncated, _request())
+    assert plan.city == "杭州"
+    assert plan.days[0].attractions[0].name == "西湖"
+
+
+# --------------------------------------------------------------------------- #
+# 各修复工具
+# --------------------------------------------------------------------------- #
+def test_sanitize_json_str_fixes_arithmetic_budget():
+    """LLM 把预算写成算术表达式时应取等号后的最终结果。"""
+    planner = _bare_planner()
+    cleaned = planner._sanitize_json_str('{"budget": {"total": 30+54+120+120=324}}')
+    assert json.loads(cleaned)["budget"]["total"] == 324
+
+
+def test_sanitize_json_str_fixes_trailing_comma_and_line_comment():
+    planner = _bare_planner()
+    cleaned = planner._sanitize_json_str('{"a": 1, // 这是注释\n "b": 2,}')
+    assert json.loads(cleaned) == {"a": 1, "b": 2}
+
+
+def test_fix_unescaped_quotes():
+    planner = _bare_planner()
+    fixed = planner._fix_unescaped_quotes('{"description": "这是"好的"景点"}')
+    assert json.loads(fixed)["description"] == "这是'好的'景点"
+
+
+def test_repair_truncated_json_closes_brackets():
+    planner = _bare_planner()
+    repaired = planner._repair_truncated_json('{"days": [{"attractions": [{"name": "故宫"')
+    data = json.loads(repaired)
+    assert data["days"][0]["attractions"][0]["name"] == "故宫"
+
+
+# --------------------------------------------------------------------------- #
+# 查询构建
+# --------------------------------------------------------------------------- #
+def test_build_planner_query_includes_all_cities_and_memory():
+    planner = _bare_planner()
+    request = TripRequest(
+        city="北京",
+        cities=[CityStay(city="北京", days=2), CityStay(city="西安", days=3)],
+        start_date="2026-10-01",
+        end_date="2026-10-05",
+        travel_days=5,
+        transportation="公共交通",
+        accommodation="经济型酒店",
+        preferences=["历史文化"],
+    )
+
+    query = planner._build_planner_query(
+        request,
+        {"北京": "故宫", "西安": "兵马俑"},
+        {"北京": "晴", "西安": "多云"},
+        {"北京": "某酒店", "西安": "另一酒店"},
+        "用户历史偏好：偏爱博物馆",
+    )
+
+    assert "北京" in query and "西安" in query
+    assert "故宫" in query and "兵马俑" in query
+    assert "用户历史偏好：偏爱博物馆" in query
+    # 多城市时要求模型输出城际交通预算字段
+    assert "total_inter_city_transport" in query
+
+
+def test_build_planner_query_single_city_has_no_intercity_block():
+    planner = _bare_planner()
+    query = planner._build_planner_query(
+        _request(),
+        {"杭州": "西湖"},
+        {"杭州": "晴"},
+        {"杭州": "某酒店"},
+    )
+    assert "西湖" in query
+    assert "**多城市特殊要求:**" not in query
+
+
+# --------------------------------------------------------------------------- #
+# 兜底计划
+# --------------------------------------------------------------------------- #
+def test_create_fallback_plan_generates_one_day_per_travel_day():
+    planner = _bare_planner()
     request = TripRequest(
         city="杭州",
         start_date="2026-10-01",
-        end_date="2026-10-02",
-        travel_days=2,
+        end_date="2026-10-03",
+        travel_days=3,
         transportation="公共交通",
         accommodation="舒适型酒店",
     )
-    plan = planner._create_fallback_plan(request)
 
+    plan = planner._create_fallback_plan(request)
     assert plan.city == "杭州"
-    assert len(plan.days) == 2
-    # 兜底也应使用真实景点名称，而不是 "杭州景点1"
-    all_names = [a.name for day in plan.days for a in day.attractions]
-    assert all_names
-    assert all("景点1" not in name for name in all_names)
-    assert plan.days[0].hotel is not None
+    assert len(plan.days) == 3
+    assert plan.days[0].date == "2026-10-01"
+    assert plan.days[2].date == "2026-10-03"
+    assert all(day.meals for day in plan.days)
+
+
+# --------------------------------------------------------------------------- #
+# 知识图谱
+# --------------------------------------------------------------------------- #
+def test_knowledge_graph_contains_city_day_and_attraction_nodes():
+    from app.models.schemas import TripPlan
+
+    graph = build_knowledge_graph(TripPlan(**_plan_dict()), language="zh")
+
+    assert graph["nodes"], "图谱节点不应为空"
+    assert graph["edges"], "图谱边不应为空"
+
+    names = {node["name"] for node in graph["nodes"]}
+    assert "杭州" in names
+    assert "西湖" in names
+    assert any(node["name"].startswith("第1天") for node in graph["nodes"])
+
+
+def test_knowledge_graph_supports_english_labels():
+    from app.models.schemas import TripPlan
+
+    graph = build_knowledge_graph(TripPlan(**_plan_dict()), language="en")
+    names = {node["name"] for node in graph["nodes"]}
+    assert "Day 1" in names
+    assert "杭州" in names  # 城市名保持原文

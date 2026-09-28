@@ -1,67 +1,34 @@
-# Python
+# ---- 运行时数据（含用户密钥与生成的行程，不入库）----
+backend/runtime_settings.json
+backend/data/trip_tasks
+backend/data/photo_cache
+
+# ---- 依赖与构建产物 ----
+.venv/
+venv/
+node_modules/
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
+.pytest_cache/
+.ruff_cache/
 
-# 虚拟环境
-venv/
-env/
-ENV/
-.venv
-
-# 环境变量
+# ---- 本地环境变量 ----
 .env
 .env.local
-.env.*.local
 
-# IDE
-.vscode/
+# ---- 编辑器 / 系统 ----
 .idea/
-*.swp
-*.swo
-*~
-
-# 日志
-*.log
-
-# 测试
-.pytest_cache/
-.coverage
-htmlcov/
-
-# 操作系统
+.vscode/
 .DS_Store
 Thumbs.db
 
-# Node.js
-node_modules/
-dist/
-dist-ssr/
-*.local
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# 本地验证产物（浏览器截图等）
+# ---- 智能体工作态与验证截图（非产品代码）----
+.workbuddy-ai/
 .verify/
 
-# AI 助手工作目录（本地记忆/会话数据）
-.workbuddy-ai/
+# ---- 合并期间的临时与备份目录 ----
+_ts_tmp/
+_pre_ruff_backup/
+_backup_HelloTravel_*/

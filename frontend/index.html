@@ -1,13 +1,28 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hello-Travel Agent 智能旅行助手</title>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0c1720" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap"
+    rel="stylesheet">
+  <title>TripStar</title>
+</head>
+
+<body>
+  <div id="app"></div>
+  <script type="text/javascript">
+    // 高德 JS API 2.0 的安全密钥。构建时由 VITE_AMAP_SECURITY_JS_CODE 注入。
+    // 这里使用非 Vite %ENV% 格式占位符，避免变量未配置时触发 Vite warning。
+    window._AMapSecurityConfig = {
+      securityJsCode: '__AMAP_SECURITY_JS_CODE__'
+    }
+  </script>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+
 </html>

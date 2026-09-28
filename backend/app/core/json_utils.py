@@ -62,9 +62,62 @@ def extract_balanced_object(text: str) -> str | None:
     return None
 
 
+def collapse_duplicate_commas(text: str) -> str:
+    """折叠字符串**外部**的连续逗号（LLM 偶发 `,,` 或 `, ,`）。
+
+    与正则方案不同，这里用状态机跟踪 ``in_string``/转义，确保字符串值内部的
+    ``",,"`` 不会被误改。
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    # 逗号后暂存的空白：若后面还是逗号则一并丢弃，否则原样回填
+    pending_space: list[str] = []
+
+    def flush_pending() -> None:
+        if pending_space:
+            out.extend(pending_space)
+            pending_space.clear()
+
+    for char in text:
+        if in_string:
+            flush_pending()
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            flush_pending()
+            in_string = True
+            out.append(char)
+        elif char == ",":
+            if out and out[-1] == ",":
+                pending_space.clear()
+                continue
+            pending_space.clear()
+            out.append(char)
+        elif char.isspace():
+            if out and out[-1] == ",":
+                pending_space.append(char)
+            else:
+                out.append(char)
+        else:
+            flush_pending()
+            out.append(char)
+
+    flush_pending()
+    return "".join(out)
+
+
 def repair_json_text(text: str) -> str:
-    """修复常见的 JSON 瑕疵：行尾注释与尾逗号。"""
+    """修复常见的 JSON 瑕疵：行尾注释、尾逗号与重复逗号。"""
     text = _LINE_COMMENT_RE.sub("", text)
+    text = collapse_duplicate_commas(text)
     text = _TRAILING_COMMA_RE.sub(r"\1", text)
     return text
 

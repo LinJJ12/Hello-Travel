@@ -1,35 +1,145 @@
-"""LLM服务模块。"""
+"""LLM服务模块"""
 
-from __future__ import annotations
+import os
 
-from hello_agents import HelloAgentsLLM
+import httpx
+from openai import OpenAI
 
 from ..config import get_settings
 from ..core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# 全局 LLM 实例
-_llm_instance: HelloAgentsLLM | None = None
+# 全局LLM实例
+_llm_instance = None
 
 
-def get_llm() -> HelloAgentsLLM:
-    """获取 LLM 实例（单例模式）。"""
+def _clear_system_proxy_env() -> None:
+    """清理系统级代理环境变量，避免 LLM / 其他非 Google 服务误继承代理配置。"""
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        os.environ.pop(key, None)
+
+
+class DirectOpenAILLM:
+    """轻量 LLM 适配器，避免 HelloAgentsLLM 构造阶段自动继承系统代理。"""
+
+    def __init__(self, model: str, api_key: str, base_url: str, timeout: int):
+        self.provider = "openai-compatible"
+        self.model = model
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.timeout,
+            http_client=httpx.Client(
+                timeout=self.timeout,
+                trust_env=False,
+            ),
+            default_headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+        )
+
+    def invoke(self, messages, **kwargs):
+        """兼容 HelloAgentsLLM 的核心接口，默认使用流式输出并拼接为纯文本。"""
+        stream = kwargs.pop("stream", True)
+        request_kwargs = {
+            "model": kwargs.get("model", self.model),
+            "messages": messages,
+            "temperature": kwargs.get("temperature", 0.7),
+            "max_tokens": kwargs.get("max_tokens"),
+            "top_p": kwargs.get("top_p"),
+            "stop": kwargs.get("stop"),
+        }
+
+        if kwargs.get("response_format") is not None:
+            request_kwargs["response_format"] = kwargs["response_format"]
+
+        if kwargs.get("tools") is not None:
+            request_kwargs["tools"] = kwargs["tools"]
+        if kwargs.get("tool_choice") is not None:
+            request_kwargs["tool_choice"] = kwargs["tool_choice"]
+
+        if stream:
+            request_kwargs["stream"] = True
+            stream_resp = self._client.chat.completions.create(**request_kwargs)
+            content_parts = []
+            for chunk in stream_resp:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                piece = getattr(delta, "content", None)
+                if piece:
+                    content_parts.append(piece)
+            return "".join(content_parts)
+
+        response = self._client.chat.completions.create(**request_kwargs)
+        choice = response.choices[0]
+        content = getattr(choice.message, "content", None) or ""
+        return content
+
+    def __call__(self, messages, **kwargs):
+        return self.invoke(messages, **kwargs)
+
+
+def get_llm() -> DirectOpenAILLM:
+    """
+    获取LLM实例(单例模式)
+
+    Returns:
+        HelloAgentsLLM实例
+    """
     global _llm_instance
 
     if _llm_instance is None:
         settings = get_settings()
-        _llm_instance = HelloAgentsLLM(
-            api_key=settings.resolved_llm_api_key or None,
-            base_url=settings.resolved_llm_base_url,
-            model=settings.resolved_llm_model,
+        _clear_system_proxy_env()
+
+        api_key = (
+            settings.openai_api_key
+            or os.getenv("LLM_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or ""
         )
-        logger.info("LLM 服务初始化完成 (provider=%s, model=%s)", _llm_instance.provider, _llm_instance.model)
+        base_url = (
+            settings.openai_base_url
+            or os.getenv("LLM_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
+            or "https://api.openai.com/v1"
+        )
+        model = (
+            settings.openai_model
+            or os.getenv("LLM_MODEL_ID")
+            or os.getenv("OPENAI_MODEL")
+            or "gpt-4"
+        )
+        timeout = int(os.getenv("LLM_TIMEOUT", "60"))
+
+        _llm_instance = DirectOpenAILLM(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+        logger.info("✅ LLM服务初始化成功")
+        logger.info(f"   提供商: {_llm_instance.provider}")
+        logger.info(f"   模型: {_llm_instance.model}")
 
     return _llm_instance
 
 
-def reset_llm() -> None:
-    """重置 LLM 实例（用于测试或重新配置）。"""
+def reset_llm():
+    """重置LLM实例(用于测试或重新配置)"""
     global _llm_instance
     _llm_instance = None
+

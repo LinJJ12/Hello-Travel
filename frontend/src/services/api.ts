@@ -1,19 +1,171 @@
 import axios from 'axios'
 import type {
-  ExplorePlace,
-  KnowledgeGraphResponse,
-  POIInfo,
+  BackendRuntimeSettings,
+  RuntimeSettings,
   TripFormData,
-  TripPlan,
-  TripPlanProgress,
-  TripPlanResponse
+  TripHistoryItem,
+  TripPlanResponse,
+  TripTaskEvent,
 } from '@/types'
-import { API_BASE_URL } from '@/config'
-import logger from '@/utils/logger'
+import { i18n } from '@/i18n'
+
+const ENV_API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
+const ENV_AMAP_WEB_JS_KEY = import.meta.env.VITE_AMAP_WEB_JS_KEY ?? ''
+const RUNTIME_API_BASE_STORAGE_KEY = 'tripstar.runtime.api_base_url'
+const RUNTIME_AMAP_WEB_JS_KEY_STORAGE_KEY = 'tripstar.runtime.amap_web_js_key'
+const RUNTIME_GOOGLE_MAPS_API_KEY_STORAGE_KEY = 'tripstar.runtime.google_maps_api_key'
+const DEFAULT_RUNTIME_BACKEND_SETTINGS: BackendRuntimeSettings = {
+  vite_amap_web_key: '',
+  vite_amap_web_js_key: '',
+  google_maps_api_key: '',
+  google_maps_proxy: '',
+  xhs_cookie: '',
+  openai_api_key: '',
+  openai_base_url: '',
+  openai_model: '',
+}
+
+export const RUNTIME_SETTINGS_UPDATED_EVENT = 'tripstar:runtime-settings-updated'
+const t = i18n.global.t
+
+const normalizeBaseUrl = (value: string | null | undefined): string => {
+  const text = String(value ?? '').trim()
+  return text.replace(/\/+$/, '')
+}
+
+const normalizeText = (value: unknown): string => String(value ?? '').trim()
+
+const resolveDefaultApiBaseUrl = (): string => {
+  const fromEnv = normalizeBaseUrl(ENV_API_BASE_URL)
+  if (fromEnv) return fromEnv
+  // 同源部署（Docker / 云端）：API 与前端在同一 origin 下
+  if (typeof window !== 'undefined' && window.location) {
+    return normalizeBaseUrl(window.location.origin) || ''
+  }
+  // 仅本地开发 fallback
+  return 'http://localhost:8000'
+}
+
+const DEFAULT_API_BASE_URL = resolveDefaultApiBaseUrl()
+const DEFAULT_AMAP_WEB_JS_KEY = normalizeText(ENV_AMAP_WEB_JS_KEY)
+
+interface SubmitTripPlanResponse {
+  task_id: string
+  plan_id: string
+  status: 'processing'
+  ws_url: string
+  message: string
+}
+
+interface GenerateTripPlanOptions {
+  onTaskCreated?: (task: SubmitTripPlanResponse) => void
+  onTaskEvent?: (event: TripTaskEvent) => void
+}
+
+interface RuntimeSettingsApiResponse {
+  success: boolean
+  message?: string
+  data?: Partial<BackendRuntimeSettings>
+}
+
+interface TripHistoryResponse {
+  items?: TripHistoryItem[]
+}
+
+export const getRuntimeApiBaseUrl = (): string => {
+  if (typeof window === 'undefined') {
+    return DEFAULT_API_BASE_URL
+  }
+  const saved = normalizeBaseUrl(window.localStorage.getItem(RUNTIME_API_BASE_STORAGE_KEY))
+  return saved || DEFAULT_API_BASE_URL
+}
+
+export const setRuntimeApiBaseUrl = (value: string): string => {
+  const normalized = normalizeBaseUrl(value) || DEFAULT_API_BASE_URL
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(RUNTIME_API_BASE_STORAGE_KEY, normalized)
+  }
+  return normalized
+}
+
+export const getRuntimeMapJsKey = (): string => {
+  if (typeof window === 'undefined') {
+    return DEFAULT_AMAP_WEB_JS_KEY
+  }
+  const saved = normalizeText(window.localStorage.getItem(RUNTIME_AMAP_WEB_JS_KEY_STORAGE_KEY))
+  return saved || DEFAULT_AMAP_WEB_JS_KEY
+}
+
+export const setRuntimeMapJsKey = (value: string): string => {
+  const normalized = normalizeText(value)
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(RUNTIME_AMAP_WEB_JS_KEY_STORAGE_KEY, normalized)
+  }
+  return normalized
+}
+
+export const getRuntimeGoogleMapsApiKey = (): string => {
+  if (typeof window === 'undefined') return ''
+  return normalizeText(window.localStorage.getItem(RUNTIME_GOOGLE_MAPS_API_KEY_STORAGE_KEY))
+}
+
+export const setRuntimeGoogleMapsApiKey = (value: string): string => {
+  const normalized = normalizeText(value)
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(RUNTIME_GOOGLE_MAPS_API_KEY_STORAGE_KEY, normalized)
+  }
+  return normalized
+}
+
+const getWsBaseUrl = (): string => getRuntimeApiBaseUrl().replace(/^http/i, 'ws').replace(/\/+$/, '')
+
+// ========== 用户记忆：本地生成并持久化匿名 user_id ==========
+const USER_ID_STORAGE_KEY = 'tripstar.user_id'
+
+export const getOrCreateUserId = (): string => {
+  if (typeof window === 'undefined') return ''
+  let uid = window.localStorage.getItem(USER_ID_STORAGE_KEY)
+  if (!uid) {
+    const cryptoObj = window.crypto as Crypto | undefined
+    uid =
+      cryptoObj && typeof cryptoObj.randomUUID === 'function'
+        ? cryptoObj.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    window.localStorage.setItem(USER_ID_STORAGE_KEY, uid)
+  }
+  return uid
+}
+
+const normalizeBackendRuntimeSettings = (
+  data?: Partial<BackendRuntimeSettings>
+): BackendRuntimeSettings => ({
+  vite_amap_web_key: normalizeText(data?.vite_amap_web_key ?? DEFAULT_RUNTIME_BACKEND_SETTINGS.vite_amap_web_key),
+  vite_amap_web_js_key: normalizeText(
+    data?.vite_amap_web_js_key ?? DEFAULT_RUNTIME_BACKEND_SETTINGS.vite_amap_web_js_key
+  ),
+  google_maps_api_key: normalizeText(
+    data?.google_maps_api_key ?? DEFAULT_RUNTIME_BACKEND_SETTINGS.google_maps_api_key
+  ),
+  google_maps_proxy: normalizeText(
+    data?.google_maps_proxy ?? DEFAULT_RUNTIME_BACKEND_SETTINGS.google_maps_proxy
+  ),
+  xhs_cookie: normalizeText(data?.xhs_cookie ?? DEFAULT_RUNTIME_BACKEND_SETTINGS.xhs_cookie),
+  openai_api_key: normalizeText(data?.openai_api_key ?? DEFAULT_RUNTIME_BACKEND_SETTINGS.openai_api_key),
+  openai_base_url:
+    normalizeText(data?.openai_base_url ?? DEFAULT_RUNTIME_BACKEND_SETTINGS.openai_base_url) ||
+    DEFAULT_RUNTIME_BACKEND_SETTINGS.openai_base_url,
+  openai_model:
+    normalizeText(data?.openai_model ?? DEFAULT_RUNTIME_BACKEND_SETTINGS.openai_model) ||
+    DEFAULT_RUNTIME_BACKEND_SETTINGS.openai_model,
+})
+
+const emitRuntimeSettingsUpdated = () => {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(RUNTIME_SETTINGS_UPDATED_EVENT))
+}
 
 const apiClient = axios.create({
-  baseURL: API_BASE_URL,
-  timeout: 300000, // 5分钟超时
+  timeout: 0, // 无超时限制，等待后端返回结果
   headers: {
     'Content-Type': 'application/json'
   }
@@ -22,11 +174,14 @@ const apiClient = axios.create({
 // 请求拦截器
 apiClient.interceptors.request.use(
   (config) => {
-    logger.debug('发送请求:', config.method?.toUpperCase(), config.url)
+    config.baseURL = getRuntimeApiBaseUrl()
+    if (import.meta.env.DEV) {
+      console.log('发送请求:', config.method?.toUpperCase(), config.url)
+    }
     return config
   },
   (error) => {
-    logger.error('请求错误:', error)
+    console.error('请求错误:', error)
     return Promise.reject(error)
   }
 )
@@ -34,25 +189,188 @@ apiClient.interceptors.request.use(
 // 响应拦截器
 apiClient.interceptors.response.use(
   (response) => {
-    logger.debug('收到响应:', response.status, response.config.url)
+    if (import.meta.env.DEV) {
+      console.log('收到响应:', response.status, response.config.url)
+    }
     return response
   },
   (error) => {
-    logger.error('响应错误:', error.response?.status, error.message)
+    console.error('响应错误:', error.response?.status, error.message)
     return Promise.reject(error)
   }
 )
 
+export async function getBackendRuntimeSettings(): Promise<BackendRuntimeSettings> {
+  try {
+    const response = await apiClient.get<RuntimeSettingsApiResponse>('/api/settings')
+    return normalizeBackendRuntimeSettings(response.data?.data)
+  } catch (error: any) {
+    console.error('读取运行时配置失败:', error)
+    throw new Error(error.response?.data?.detail || error.message || '读取配置失败')
+  }
+}
+
+export async function updateBackendRuntimeSettings(
+  updates: Partial<BackendRuntimeSettings>
+): Promise<BackendRuntimeSettings> {
+  try {
+    const response = await apiClient.put<RuntimeSettingsApiResponse>('/api/settings', updates)
+    return normalizeBackendRuntimeSettings(response.data?.data)
+  } catch (error: any) {
+    console.error('保存运行时配置失败:', error)
+    throw new Error(error.response?.data?.detail || error.message || '保存配置失败')
+  }
+}
+
+export async function getRuntimeSettings(): Promise<RuntimeSettings> {
+  const backend = await getBackendRuntimeSettings()
+  const apiBaseUrl = getRuntimeApiBaseUrl()
+  const mapJsKey = getRuntimeMapJsKey() || backend.vite_amap_web_js_key
+
+  // 同步 Google Maps API Key 到 localStorage 供前端地图组件读取
+  if (backend.google_maps_api_key) {
+    setRuntimeGoogleMapsApiKey(backend.google_maps_api_key)
+  }
+
+  return {
+    api_base_url: apiBaseUrl,
+    ...backend,
+    vite_amap_web_js_key: mapJsKey,
+  }
+}
+
+export async function saveRuntimeSettings(settings: RuntimeSettings): Promise<RuntimeSettings> {
+  const previousApiBaseUrl = getRuntimeApiBaseUrl()
+  const targetApiBaseUrl = normalizeBaseUrl(settings.api_base_url) || previousApiBaseUrl
+  const updates: Partial<BackendRuntimeSettings> = {
+    vite_amap_web_key: settings.vite_amap_web_key,
+    vite_amap_web_js_key: settings.vite_amap_web_js_key,
+    google_maps_api_key: settings.google_maps_api_key,
+    google_maps_proxy: settings.google_maps_proxy,
+    xhs_cookie: settings.xhs_cookie,
+    openai_api_key: settings.openai_api_key,
+    openai_base_url: settings.openai_base_url,
+    openai_model: settings.openai_model,
+  }
+  setRuntimeApiBaseUrl(targetApiBaseUrl)
+
+  let backend: BackendRuntimeSettings
+  try {
+    backend = await updateBackendRuntimeSettings(updates)
+  } catch (error) {
+    setRuntimeApiBaseUrl(previousApiBaseUrl)
+    throw error
+  }
+
+  const apiBaseUrl = setRuntimeApiBaseUrl(targetApiBaseUrl)
+  const mapJsKey = setRuntimeMapJsKey(settings.vite_amap_web_js_key || backend.vite_amap_web_js_key)
+  setRuntimeGoogleMapsApiKey(settings.google_maps_api_key || backend.google_maps_api_key)
+
+  emitRuntimeSettingsUpdated()
+
+  return {
+    api_base_url: apiBaseUrl,
+    ...backend,
+    vite_amap_web_js_key: mapJsKey || backend.vite_amap_web_js_key,
+  }
+}
+
 /**
- * 从后端错误对象里提取可读的 message。
- *
- * 后端在改造后统一返回 `{ code, message }` 结构，这里做兼容处理。
+ * 提交旅行规划任务（立即返回 task_id）
  */
-export function extractErrorMessage(error: any, fallback = '请求失败'): string {
-  const detail = error?.response?.data?.detail
-  if (typeof detail === 'string') return detail
-  if (detail?.message) return detail.message
-  return error?.message || fallback
+export async function submitTripPlan(formData: TripFormData): Promise<SubmitTripPlanResponse> {
+  try {
+    const payload = { ...formData, user_id: getOrCreateUserId() }
+    const response = await apiClient.post('/api/trip/plan', payload)
+    return response.data
+  } catch (error: any) {
+    console.error('提交旅行计划失败:', error)
+    throw new Error(error.response?.data?.detail || error.message || t('api.submitTripPlanFailed'))
+  }
+}
+
+/**
+ * 轮询任务状态
+ */
+export async function pollTaskStatus(taskId: string): Promise<any> {
+  try {
+    const response = await apiClient.get(`/api/trip/status/${taskId}`)
+    return response.data
+  } catch (error: any) {
+    console.error('查询任务状态失败:', error)
+    throw new Error(error.response?.data?.detail || error.message || t('api.queryTaskStatusFailed'))
+  }
+}
+
+export async function getTripHistory(limit = 8): Promise<TripHistoryItem[]> {
+  try {
+    const response = await apiClient.get<TripHistoryResponse>('/api/trip/history', {
+      params: { limit },
+    })
+    return Array.isArray(response.data?.items) ? response.data.items : []
+  } catch (error: any) {
+    console.error('查询历史计划失败:', error)
+    throw new Error(error.response?.data?.detail || error.message || t('api.queryTaskStatusFailed'))
+  }
+}
+
+const resolveTaskWsUrl = (wsUrl: string): string =>
+  wsUrl.startsWith('ws://') || wsUrl.startsWith('wss://') ? wsUrl : `${getWsBaseUrl()}${wsUrl}`
+
+function subscribeTripTask(
+  wsUrl: string,
+  options?: GenerateTripPlanOptions
+): Promise<TripPlanResponse> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const socket = new WebSocket(wsUrl)
+
+    const safeResolve = (value: TripPlanResponse) => {
+      if (settled) return
+      settled = true
+      socket.close()
+      resolve(value)
+    }
+
+    const safeReject = (error: unknown) => {
+      if (settled) return
+      settled = true
+      socket.close()
+      reject(error)
+    }
+
+    socket.onmessage = (ev) => {
+      try {
+        const event = JSON.parse(ev.data) as TripTaskEvent
+        options?.onTaskEvent?.(event)
+
+        if (event.status === 'completed') {
+          if (!event.result) {
+            safeReject(new Error(t('api.generateTripPlanFailed')))
+            return
+          }
+          safeResolve(event.result)
+          return
+        }
+
+        if (event.status === 'failed') {
+          safeReject(new Error(event.error || event.message || t('api.generateTripPlanFailed')))
+        }
+      } catch (err) {
+        safeReject(err)
+      }
+    }
+
+    socket.onerror = () => {
+      safeReject(new Error(t('api.generateTripPlanFailed')))
+    }
+
+    socket.onclose = () => {
+      if (!settled) {
+        safeReject(new Error(t('api.generateTripPlanFailed')))
+      }
+    }
+  })
 }
 
 /**
@@ -60,70 +378,31 @@ export function extractErrorMessage(error: any, fallback = '请求失败'): stri
  */
 export async function generateTripPlan(
   formData: TripFormData,
-  onProgress?: (progress: TripPlanProgress) => void
+  options?: GenerateTripPlanOptions
 ): Promise<TripPlanResponse> {
-  try {
-    // 使用异步作业接口：先提交任务，后轮询结果，避免长请求被浏览器中断
-    const submitResp = await apiClient.post('/api/trip/plan_async', formData, { timeout: 30000 })
-    const jobId = submitResp.data?.job_id
-    if (!jobId) throw new Error('未获得 job_id')
-    onProgress?.({
-      status: 'pending',
-      stage: submitResp.data?.stage || '已提交',
-      progress: submitResp.data?.progress || 10,
-      message: submitResp.data?.message || '任务已提交，正在排队处理'
-    })
-
-    const maxAttempts = 300 // 最多轮询 300 次 ~ 10 分钟 (300*2000ms)
-    const interval = 2000
-
-    for (let i = 0; i < maxAttempts; i++) {
-      try {
-        const pollResp = await apiClient.get(`/api/trip/plan_result/${jobId}`, { timeout: 30000 })
-        const data = pollResp.data
-        if (data && data.status === 'pending') {
-          onProgress?.({
-            status: 'pending',
-            stage: data.stage,
-            progress: data.progress,
-            message: data.message
-          })
-        } else {
-          // 成功或失败（若失败会以 HTTP 500 返回）
-          return data as TripPlanResponse
-        }
-      } catch (pollErr: any) {
-        // 如果 404/500 等，可直接抛出
-        logger.error('轮询错误:', pollErr)
-        throw new Error(extractErrorMessage(pollErr, '轮询任务失败'))
-      }
-
-      // 等待
-      await new Promise((res) => setTimeout(res, interval))
-    }
-
-    throw new Error('等待任务超时')
-
-  } catch (error: any) {
-    logger.error('生成旅行计划失败:', error)
-    throw new Error(extractErrorMessage(error, '生成旅行计划失败'))
-  }
+  const task = await submitTripPlan(formData)
+  options?.onTaskCreated?.(task)
+  return subscribeTripTask(resolveTaskWsUrl(task.ws_url), options)
 }
 
 /**
- * 获取景点配图（Unsplash）。
- *
- * 原实现直接在 Result.vue 里 `fetch('http://localhost:8000/api/poi/photo')`，
- * 硬编码了后端地址且绕过了统一的 axios 封装；这里改为走 apiClient。
+ * 重新挂接一个已提交的任务。
+ * 页面刷新、WebSocket 断线或代理空闲超时后，后端任务可能仍在继续执行。
  */
-export async function fetchAttractionPhoto(name: string): Promise<string | null> {
-  try {
-    const response = await apiClient.get('/api/poi/photo', { params: { name }, timeout: 15000 })
-    return response.data?.data?.photo_url || null
-  } catch (error) {
-    logger.debug('获取景点配图失败:', name, error)
-    return null
+export async function resumeTripPlan(
+  taskId: string,
+  options?: GenerateTripPlanOptions
+): Promise<TripPlanResponse> {
+  const status = await pollTaskStatus(taskId)
+
+  if (status?.status === 'completed' && status.result) {
+    return status.result as TripPlanResponse
   }
+  if (status?.status === 'failed') {
+    throw new Error(status.error || t('api.generateTripPlanFailed'))
+  }
+
+  return subscribeTripTask(resolveTaskWsUrl(`/api/trip/ws/${taskId}`), options)
 }
 
 /**
@@ -135,97 +414,43 @@ export async function healthCheck(): Promise<any> {
     return response.data
   } catch (error: any) {
     console.error('健康检查失败:', error)
-    throw new Error(error.message || '健康检查失败')
+    throw new Error(error.message || t('api.healthCheckFailed'))
   }
 }
 
-export async function getKnowledgeGraph(plan: TripPlan): Promise<KnowledgeGraphResponse> {
-  const response = await apiClient.post('/api/assistant/knowledge-graph', plan)
-  return response.data as KnowledgeGraphResponse
+// ========== 用户偏好记忆管理 ==========
+export interface UserMemoryItem {
+  memory_id: string
+  content: string
+  source: string
+  weight: number
+  create_time: number
+  last_access_time: number
 }
 
-export async function askTripAssistant(question: string, tripPlan: TripPlan): Promise<string> {
-  const response = await apiClient.post('/api/assistant/chat', {
-    question,
-    trip_plan: tripPlan
-  })
-  return response.data?.answer || ''
+export async function listUserMemory(userId: string): Promise<UserMemoryItem[]> {
+  const response = await apiClient.get('/api/memory/list', { params: { user_id: userId } })
+  return response.data?.data ?? []
 }
 
-export const EXPLORE_THEMES = [
-  {
-    key: 'nature',
-    label: '自然风光',
-    keywords: ['景区', '公园', '山', '湖']
-  },
-  {
-    key: 'food',
-    label: '美食推荐',
-    keywords: ['美食', '小吃', '餐厅', '老字号']
-  },
-  {
-    key: 'culture',
-    label: '历史文化',
-    keywords: ['博物馆', '古迹', '历史文化', '寺庙']
-  },
-  {
-    key: 'leisure',
-    label: '艺术休闲',
-    keywords: ['艺术馆', '展览', '咖啡', '街区']
-  },
-  {
-    key: 'shopping',
-    label: '购物休闲',
-    keywords: ['商圈', '市集', '购物中心']
-  }
-] as const
-
-export type ExploreThemeKey = typeof EXPLORE_THEMES[number]['key'] | 'all' | 'none'
-
-export async function searchPOI(keyword: string, city: string, citylimit = true): Promise<POIInfo[]> {
-  const response = await apiClient.get('/api/map/poi', {
-    params: {
-      keywords: keyword,
-      city,
-      citylimit
-    }
+export async function addExplicitMemory(userId: string, content: string) {
+  const response = await apiClient.post('/api/memory/add-explicit', null, {
+    params: { user_id: userId, content },
   })
-  return response.data?.data || []
+  return response.data
 }
 
-export async function searchPOIByTheme(city: string, themeKey: ExploreThemeKey): Promise<ExplorePlace[]> {
-  if (themeKey === 'none') return []
+export async function clearUserMemory(userId: string) {
+  const response = await apiClient.delete('/api/memory/clear', { params: { user_id: userId } })
+  return response.data
+}
 
-  const themes = themeKey === 'all'
-    ? EXPLORE_THEMES
-    : EXPLORE_THEMES.filter(theme => theme.key === themeKey)
-
-  const results = await Promise.allSettled(
-    themes.flatMap(theme => {
-      return theme.keywords.map(async keyword => {
-        const pois = await searchPOI(keyword, city)
-        return pois.map(poi => ({
-          ...poi,
-          theme: theme.key,
-          themeLabel: theme.label,
-          keyword
-        }))
-      })
-    })
-  )
-
-  const deduped = new Map<string, ExplorePlace>()
-  results.forEach(result => {
-    if (result.status !== 'fulfilled') return
-    result.value.forEach(place => {
-      const key = place.id || `${place.name}-${place.address || ''}`
-      if (!deduped.has(key)) {
-        deduped.set(key, place)
-      }
-    })
+export async function deleteMemoryItem(userId: string, memoryId: string) {
+  const response = await apiClient.delete('/api/memory/item', {
+    params: { user_id: userId, memory_id: memoryId },
   })
-
-  return Array.from(deduped.values())
+  return response.data
 }
 
 export default apiClient
+

@@ -1,0 +1,50 @@
+# 一键启动：docker compose up -d --build
+# 启动前请先 `cp .env.example .env` 并填入必要的 Key。
+services:
+  trip-planner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_AMAP_WEB_JS_KEY: ${VITE_AMAP_WEB_JS_KEY:-}
+        VITE_AMAP_SECURITY_JS_CODE: ${VITE_AMAP_SECURITY_JS_CODE:-}
+    image: tripstar:latest
+    container_name: tripstar
+    ports:
+      - "7860:7860"
+    environment:
+      # ---- LLM（OpenAI 兼容）----
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_MODEL_ID=${LLM_MODEL_ID:-}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-600}
+      # ---- 高德地图 ----
+      - VITE_AMAP_WEB_KEY=${VITE_AMAP_WEB_KEY:-}
+      - VITE_AMAP_WEB_JS_KEY=${VITE_AMAP_WEB_JS_KEY:-}
+      # ---- 小红书 ----
+      - XHS_COOKIE=${XHS_COOKIE:-}
+      # ---- Google Maps（可选）----
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY:-}
+      - GOOGLE_MAPS_PROXY=${GOOGLE_MAPS_PROXY:-}
+      # ---- 用户偏好记忆（可选）----
+      - ENABLE_USER_MEMORY=${ENABLE_USER_MEMORY:-false}
+      - MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-2.0}
+      - MIN_INIT_WEIGHT=${MIN_INIT_WEIGHT:-4.0}
+      - MEMORY_DECAY_FACTOR=${MEMORY_DECAY_FACTOR:-0.97}
+      - MEMORY_MAX_RECALL=${MEMORY_MAX_RECALL:-10}
+      - MEMORY_MAX_SINGLE_CONTENT=${MEMORY_MAX_SINGLE_CONTENT:-120}
+      - MEMORY_USE_SQLITE=${MEMORY_USE_SQLITE:-false}
+      # ---- 服务与日志 ----
+      - HOST=0.0.0.0
+      - PORT=7860
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # 高德 REST 结果缓存时长（秒），0 表示关闭
+      - AMAP_CACHE_TTL=${AMAP_CACHE_TTL:-600}
+    volumes:
+      # 持久化历史任务 / 图片缓存 / 记忆库，容器重建不丢数据
+      - trip_data:/app/backend/data
+    restart: unless-stopped
+
+volumes:
+  trip_data:

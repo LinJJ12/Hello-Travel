@@ -1,39 +1,37 @@
 import { createApp } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import 'ant-design-vue/dist/reset.css'
+import './styles/global.css'
 import App from './App.vue'
+import { i18n } from './i18n'
+
+// 合并说明：这里不再 `import Antd from 'ant-design-vue'` + `app.use(Antd)`。
+// 全量注册会把整个组件库打进单个 chunk（约 1.4MB）；现改由
+// unplugin-vue-components 的 AntDesignVueResolver 在 vite.config.ts 中按需自动引入，
+// 只打包模板里真正用到的组件。ant-design-vue v4 使用 CSS-in-JS，
+// 无需再按组件引入样式文件，仅保留全局 reset.css。
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
       path: '/',
-      name: 'Home',
-      component: () => import('./views/Home.vue')
+      name: 'Landing',
+      // 懒加载：结果页会带上 echarts / html2canvas / swiper / 地图 SDK。
+      // 首页首屏不应该为这些结果页依赖付出加载成本。
+      component: () => import('./views/Landing.vue')
     },
     {
       path: '/result',
       name: 'Result',
       component: () => import('./views/Result.vue')
-    },
-    {
-      path: '/explore',
-      name: 'Explore',
-      component: () => import('./views/Explore.vue')
-    },
-    {
-      path: '/history',
-      name: 'History',
-      component: () => import('./views/History.vue')
     }
   ]
 })
 
 const app = createApp(App)
 
-// 说明：不再全量 `app.use(Antd)`。
-// ant-design-vue 组件由 unplugin-vue-components 按需自动注册（见 vite.config.ts），
-// 命令式 API（message 等）在各视图内按需 import，因此这里无需注册全局插件。
 app.use(router)
+app.use(i18n)
 
 app.mount('#app')
