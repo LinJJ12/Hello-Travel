@@ -3871,15 +3871,19 @@ const drawRoutes = async (AMap: any, attractions: any[]): Promise<any[]> => {
 
 .overview-swiper .swiper {
   padding: 0 0 0.6rem;
-  margin-top: -2rem;
-  margin-bottom: -2rem;
+  /* 原先这里还有 margin-top/bottom: -2rem，配合 32rem 的 min-height 使用。
+     负边距只压缩「布局高度」、并不改变盒子的实际尺寸，导致 .swiper 盒子
+     比外层 .overview-swiper 上下各高出约 22px，直接盖住了下方的
+     .overview-meta（日期 / Plan ID / 温馨提示）——不仅文字被遮，连点击都被
+     swiper 拦截。改为：去掉负边距，把 min-height 降到刚好容纳最高卡片
+     （coverflow 下最高的那张约 374px），盒子便完全落在容器内。 */
   overflow: hidden;
   border-radius: 12px;
 }
 
 .overview-swiper .swiper-wrapper {
   align-items: flex-end;
-  min-height: 32rem;
+  min-height: 24rem;
 }
 
 
