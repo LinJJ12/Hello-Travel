@@ -6,12 +6,18 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 
 import httpx
 
-BASE = "http://127.0.0.1:18080"
+# 默认端口刻意避开 18080：该端口常被本机 Docker 发布的其他项目容器占用
+# （例如 `zilv-web` 映射 `0.0.0.0:18080->80`），撞上会连错服务。
+# 需要时用环境变量覆盖：
+#     E2E_BASE_URL=http://127.0.0.1:9000 python scripts/e2e_check.py
+BASE = os.getenv("E2E_BASE_URL", "http://127.0.0.1:18081")
+WS_BASE = BASE.replace("https://", "wss://").replace("http://", "ws://")
 PASS: list[str] = []
 FAIL: list[str] = []
 
@@ -136,7 +142,7 @@ def main() -> int:
         async def ws_probe() -> dict:
             import asyncio
 
-            async with websockets.connect(f"ws://127.0.0.1:18080/api/trip/ws/{tid}") as ws:
+            async with websockets.connect(f"{WS_BASE}/api/trip/ws/{tid}") as ws:
                 return json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
 
         import asyncio
@@ -154,7 +160,7 @@ def main() -> int:
         import websockets
 
         async def ws_missing() -> dict:
-            async with websockets.connect("ws://127.0.0.1:18080/api/trip/ws/nope1234") as ws:
+            async with websockets.connect(f"{WS_BASE}/api/trip/ws/nope1234") as ws:
                 return json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
 
         snap = asyncio.run(ws_missing())

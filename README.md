@@ -355,13 +355,17 @@ npm run build
 ```bash
 cd backend
 
-# 先启动服务
-python -m uvicorn app.api.main:app --port 18080
+# 先启动服务（18081 为本项目约定的验证端口，避开 8000 主端口；
+# 也不要使用 18080 —— 该端口常被本机 Docker 发布的其他项目容器占用）
+python -m uvicorn app.api.main:app --port 18081
 
 # 另开终端执行（覆盖健康检查、SPA 托管、配置读写、地图/POI 接口、
 # 行程任务提交-轮询-WebSocket、404/422 错误路径、路径穿越防护）
 python scripts/e2e_check.py
 ```
+
+> 服务不在默认端口时，用环境变量指定：
+> `E2E_BASE_URL=http://127.0.0.1:9000 python scripts/e2e_check.py`
 
 浏览器端渲染验证（`vue-tsc` / `vite build` 通过 ≠ 页面能渲染，这一步补上真实渲染与运行时错误检查）：
 
@@ -372,8 +376,8 @@ python scripts/seed_demo_task.py          # 输出 task_id，例如 e2e00001
 
 cd ..
 # 通过 Chrome DevTools Protocol 打开页面、截图，并汇总控制台错误 / 未捕获异常 / 失败请求
-node scripts/browser_check.mjs "http://127.0.0.1:18080/" .verify/landing.png
-node scripts/browser_check.mjs "http://127.0.0.1:18080/result?plan_id=e2e00001" .verify/graph.png 知识图谱
+node scripts/browser_check.mjs "http://127.0.0.1:18081/" .verify/landing.png
+node scripts/browser_check.mjs "http://127.0.0.1:18081/result?plan_id=e2e00001" .verify/graph.png 知识图谱
 ```
 
 **当前验证状态**：`ruff check .` 全通过 · `pytest -q` **73 passed** ·

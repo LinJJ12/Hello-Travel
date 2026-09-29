@@ -9,8 +9,8 @@
  *   node scripts/browser_check.mjs <url> <输出png> [要点击的文本]
  *
  * 示例：
- *   node scripts/browser_check.mjs http://127.0.0.1:18080/ .verify/landing.png
- *   node scripts/browser_check.mjs "http://127.0.0.1:18080/result?plan_id=e2e00001" \
+ *   node scripts/browser_check.mjs http://127.0.0.1:18081/ .verify/landing.png
+ *   node scripts/browser_check.mjs "http://127.0.0.1:18081/result?plan_id=e2e00001" \
  *        .verify/graph.png 知识图谱
  *
  * 环境变量：

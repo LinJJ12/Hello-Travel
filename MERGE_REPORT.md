@@ -290,7 +290,7 @@ Hello-Travel 原本在缺少密钥时**直接抛错**，这在「密钥只能来
 
 ### 9.3 HTTP / WebSocket 端到端真实测试
 
-启动真实 `uvicorn` 实例（`127.0.0.1:18080`），对运行中的服务发起真实 HTTP /
+启动真实 `uvicorn` 实例（`127.0.0.1:18081`，可用 `E2E_BASE_URL` 覆盖），对运行中的服务发起真实 HTTP /
 WebSocket 请求：`backend/scripts/e2e_check.py` → **47 项检查全部通过**。
 
 覆盖范围：

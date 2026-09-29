@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -243,7 +244,8 @@ def main() -> int:
     print(f"✅ 已写入 {target}")
     print(f"   多城市={plan.cities}  天数={len(plan.days)}")
     print(f"   图谱节点={len(nodes)}  边={len(edges)}  分类={len(graph.get('categories', []))}")
-    print(f"   访问： http://127.0.0.1:18080/result?plan_id={task_id}")
+    base = os.getenv("E2E_BASE_URL", "http://127.0.0.1:18081")
+    print(f"   访问： {base}/result?plan_id={task_id}")
     return 0
 
 
